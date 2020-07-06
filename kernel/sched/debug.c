@@ -225,6 +225,8 @@ static void sd_free_ctl_entry(struct ctl_table **tablep)
 			sd_free_ctl_entry(&entry->child);
 		if (entry->proc_handler == NULL)
 			kfree(entry->procname);
+		if (entry->extra1)
+			kfree(entry->extra1);
 	}
 
 	kfree(*tablep);
@@ -251,9 +253,14 @@ static int sd_ctl_doflags(struct ctl_table *table, int write,
 	size_t len = 0;
 	char *tmp, *buf;
 	int idx;
+	int ret;
 
-	if (write)
-		return 0;
+	if (write) {
+		ret = proc_dointvec(table, write, buffer, lenp, ppos);
+		if (!ret)
+			update_domain_cpu(*(int *)(table->extra1));
+		return ret;
+	}
 
 	for_each_set_bit(idx, &flags, __SD_FLAG_CNT) {
 		char *name = sd_flag_debug[idx].name;
@@ -298,19 +305,29 @@ static int sd_ctl_doflags(struct ctl_table *table, int write,
 }
 
 static struct ctl_table *
-sd_alloc_ctl_domain_table(struct sched_domain *sd)
+sd_alloc_ctl_domain_table(struct sched_domain *sd, int cpu)
 {
 	struct ctl_table *table = sd_alloc_ctl_entry(9);
+	int *cpu_param;
 
 	if (table == NULL)
 		return NULL;
+
+	/* Pass the CPU index to the handler. */
+	cpu_param = kmalloc(sizeof(int), GFP_KERNEL);
+	if (!cpu_param) {
+		kfree(table);
+		return NULL;
+	}
+	*cpu_param = cpu;
 
 	set_table_entry(&table[0], "min_interval",	  &sd->min_interval,	    sizeof(long), 0644, proc_doulongvec_minmax);
 	set_table_entry(&table[1], "max_interval",	  &sd->max_interval,	    sizeof(long), 0644, proc_doulongvec_minmax);
 	set_table_entry(&table[2], "busy_factor",	  &sd->busy_factor,	    sizeof(int),  0644, proc_dointvec_minmax);
 	set_table_entry(&table[3], "imbalance_pct",	  &sd->imbalance_pct,	    sizeof(int),  0644, proc_dointvec_minmax);
 	set_table_entry(&table[4], "cache_nice_tries",	  &sd->cache_nice_tries,    sizeof(int),  0644, proc_dointvec_minmax);
-	set_table_entry(&table[5], "flags",		  &sd->flags,		    sizeof(int),  0444, sd_ctl_doflags);
+	set_table_entry(&table[5], "flags",		  &sd->flags,		    sizeof(int),  0644, sd_ctl_doflags);
+	table[5].extra1 = (void *)cpu_param;
 	set_table_entry(&table[6], "max_newidle_lb_cost", &sd->max_newidle_lb_cost, sizeof(long), 0644, proc_doulongvec_minmax);
 	set_table_entry(&table[7], "name",		  sd->name,	       CORENAME_MAX_SIZE, 0444, proc_dostring);
 	/* &table[8] is terminator */
@@ -336,7 +353,7 @@ static struct ctl_table *sd_alloc_ctl_cpu_table(int cpu)
 		snprintf(buf, 32, "domain%d", i);
 		entry->procname = kstrdup(buf, GFP_KERNEL);
 		entry->mode = 0555;
-		entry->child = sd_alloc_ctl_domain_table(sd);
+		entry->child = sd_alloc_ctl_domain_table(sd, cpu);
 		entry++;
 		i++;
 	}
