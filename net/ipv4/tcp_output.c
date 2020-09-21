@@ -416,6 +416,7 @@ static inline bool tcp_urg_mode(const struct tcp_sock *tp)
 #define OPTION_FAST_OPEN_COOKIE	(1 << 8)
 #define OPTION_SMC		(1 << 9)
 #define OPTION_MPTCP		(1 << 10)
+#define OPTION_TCP_TOA		(1 << 11)
 
 static void smc_options_write(__be32 *ptr, u16 *options)
 {
@@ -443,6 +444,7 @@ struct tcp_out_options {
 	__u32 tsval, tsecr;	/* need to include OPTION_TS */
 	struct tcp_fastopen_cookie *fastopen_cookie;	/* Fast open cookie */
 	struct mptcp_out_options mptcp;
+	struct toa_data toa_data_info;
 };
 
 static void mptcp_options_write(__be32 *ptr, struct tcp_out_options *opts)
@@ -702,6 +704,13 @@ static void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 	smc_options_write(ptr, &options);
 
 	mptcp_options_write(ptr, opts);
+
+	if (unlikely(OPTION_TCP_TOA & options)) {
+		*ptr++ = htonl((opts->toa_data_info.opcode << 24) |
+				(opts->toa_data_info.opsize << 16) |
+				(htons(opts->toa_data_info.port)));
+		*ptr++ = opts->toa_data_info.ip;
+	}
 }
 
 static void smc_set_option(const struct tcp_sock *tp,
@@ -832,6 +841,15 @@ static unsigned int tcp_syn_options(struct sock *sk, struct sk_buff *skb,
 	}
 
 	bpf_skops_hdr_opt_len(sk, skb, NULL, NULL, 0, opts, &remaining);
+
+	if (tp->tcp_toa_ip != 0 && tp->tcp_toa_port != 0) {
+		opts->toa_data_info.opcode = TCPOPT_EXP;
+		opts->toa_data_info.opsize = TCPOLEN_TOA_V1;
+		opts->toa_data_info.ip = tp->tcp_toa_ip;
+		opts->toa_data_info.port = tp->tcp_toa_port;
+		opts->options |= OPTION_TCP_TOA;
+		remaining -= TCPOLEN_TOA_V1;
+	}
 
 	return MAX_TCP_OPTION_SPACE - remaining;
 }
@@ -981,6 +999,15 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
 		size = MAX_TCP_OPTION_SPACE - remaining;
 	}
 
+	if (tp->bytes_received <= 1 && tp->bytes_acked <= 1 &&
+	    tp->tcp_toa_ip != 0  && tp->tcp_toa_port != 0) {
+		opts->toa_data_info.opcode = TCPOPT_EXP;
+		opts->toa_data_info.opsize = TCPOLEN_TOA_V1;
+		opts->toa_data_info.ip = tp->tcp_toa_ip;
+		opts->toa_data_info.port = tp->tcp_toa_port;
+		opts->options |= OPTION_TCP_TOA;
+		size += TCPOLEN_TOA_V1;
+	}
 	return size;
 }
 

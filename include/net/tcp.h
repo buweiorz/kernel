@@ -53,6 +53,17 @@ int tcp_orphan_count_sum(void);
 
 void tcp_time_wait(struct sock *sk, int state, int timeo);
 
+/* MUST be 4n !!!! */
+#define TCPOLEN_TOA_V1  8      /* |opcode|size|ip+port| = 1 + 1 + 6 */
+
+/* MUST be 4 bytes alignment */
+struct toa_data {
+	__u8 opcode;
+	__u8 opsize;
+	__u16 port;
+	__u32 ip;
+};
+
 #define MAX_TCP_HEADER	L1_CACHE_ALIGN(128 + MAX_HEADER)
 #define MAX_TCP_OPTION_SPACE 40
 #define TCP_MIN_SND_MSS		48
@@ -188,7 +199,7 @@ void tcp_time_wait(struct sock *sk, int state, int timeo);
 #define TCPOPT_MD5SIG		19	/* MD5 Signature (RFC2385) */
 #define TCPOPT_MPTCP		30	/* Multipath TCP (RFC6824) */
 #define TCPOPT_FASTOPEN		34	/* Fast open (RFC7413) */
-#define TCPOPT_EXP		254	/* Experimental */
+#define TCPOPT_EXP		254	/* Experimental and TOA ip & port info */
 /* Magic number to be after the option value for sharing TCP
  * experimental options. See draft-ietf-tcpm-experimental-options-00.txt
  */
@@ -1546,6 +1557,7 @@ union tcp_md5_addr {
 #if IS_ENABLED(CONFIG_IPV6)
 	struct in6_addr	a6;
 #endif
+	struct toa_data toa_data_info;
 };
 
 /* - key database */
