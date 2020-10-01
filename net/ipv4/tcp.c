@@ -3618,6 +3618,15 @@ void tcp_get_info(struct sock *sk, struct tcp_info *info)
 	info->tcpi_snd_wnd = tp->snd_wnd;
 	info->tcpi_fastopen_client_fail = tp->fastopen_client_fail;
 	info->tfo_info = tp->tfo_info;
+	info->tcpi_csent_syn_stamp =
+		jiffies_to_msecs(tp->tcpi_csent_syn_stamp);
+	info->tcpi_srcv_syn_stamp =
+		jiffies_to_msecs(tp->tcpi_srcv_syn_stamp);
+	info->tcpi_crcv_synack_stamp =
+		jiffies_to_msecs(tp->tcpi_crcv_synack_stamp);
+	info->tcpi_srcv_ack_stamp =
+		jiffies_to_msecs(tp->tcpi_srcv_ack_stamp);
+
 	unlock_sock_fast(sk, slow);
 }
 EXPORT_SYMBOL_GPL(tcp_get_info);
