@@ -264,6 +264,7 @@ struct kvm_xen_exit {
 #define KVM_EXIT_ARM_NISV         28
 #define KVM_EXIT_X86_RDMSR        29
 #define KVM_EXIT_X86_WRMSR        30
+#define KVM_EXIT_X86_BUS_LOCK     33
 #define KVM_EXIT_XEN              34
 
 /* For KVM_EXIT_INTERNAL_ERROR */
@@ -1072,6 +1073,7 @@ struct kvm_ppc_resize_hpt {
 #define KVM_CAP_ENFORCE_PV_FEATURE_CPUID 190
 #define KVM_CAP_SGX_ATTRIBUTE 196
 #define KVM_CAP_SYS_HYPERV_CPUID 191
+#define KVM_CAP_X86_BUS_LOCK_EXIT 193
 #define KVM_CAP_SGX_ATTRIBUTE 196
 #define KVM_CAP_HYPERV_ENFORCE_CPUID 199
 #define KVM_CAP_XSAVE2 208
@@ -1740,6 +1742,9 @@ struct kvm_hyperv_eventfd {
 
 #define KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE    (1 << 0)
 #define KVM_DIRTY_LOG_INITIALLY_SET            (1 << 1)
+
+#define KVM_BUS_LOCK_DETECTION_OFF             (1 << 0)
+#define KVM_BUS_LOCK_DETECTION_EXIT            (1 << 1)
 
 /* Available with KVM_CAP_XSAVE2 */
 #define KVM_GET_XSAVE2		  _IOR(KVMIO,  0xcf, struct kvm_xsave)
