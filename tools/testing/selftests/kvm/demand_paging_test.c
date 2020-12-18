@@ -39,12 +39,14 @@
 #define PER_VCPU_DEBUG(...) _no_printf(__VA_ARGS__)
 #endif
 
+static int nr_vcpus = 1;
+static uint64_t guest_percpu_mem_size = DEFAULT_PER_VCPU_MEM_SIZE;
 static char *guest_data_prototype;
 
 static void *vcpu_worker(void *data)
 {
 	int ret;
-	struct vcpu_args *vcpu_args = (struct vcpu_args *)data;
+	struct perf_test_vcpu_args *vcpu_args = (struct perf_test_vcpu_args *)data;
 	int vcpu_id = vcpu_args->vcpu_id;
 	struct kvm_vm *vm = perf_test_args.vm;
 	struct kvm_run *run;
@@ -261,7 +263,7 @@ static void run_test(enum vm_guest_mode mode, bool use_uffd,
 	int vcpu_id;
 	int r;
 
-	vm = create_vm(mode, nr_vcpus, guest_percpu_mem_size);
+	vm = perf_test_create_vm(mode, nr_vcpus, guest_percpu_mem_size);
 
 	perf_test_args.wr_fract = 1;
 
@@ -273,7 +275,7 @@ static void run_test(enum vm_guest_mode mode, bool use_uffd,
 	vcpu_threads = malloc(nr_vcpus * sizeof(*vcpu_threads));
 	TEST_ASSERT(vcpu_threads, "Memory allocation failed");
 
-	add_vcpus(vm, nr_vcpus, guest_percpu_mem_size);
+	perf_test_setup_vcpus(vm, nr_vcpus, guest_percpu_mem_size);
 
 	if (use_uffd) {
 		uffd_handler_threads =
@@ -357,8 +359,7 @@ static void run_test(enum vm_guest_mode mode, bool use_uffd,
 		perf_test_args.vcpu_args[0].pages * nr_vcpus /
 		((double)ts_diff.tv_sec + (double)ts_diff.tv_nsec / 100000000.0));
 
-	ucall_uninit(vm);
-	kvm_vm_free(vm);
+	perf_test_destroy_vm(vm);
 
 	free(guest_data_prototype);
 	free(vcpu_threads);

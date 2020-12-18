@@ -24,10 +24,13 @@
 /* How many host loops to run by default (one KVM_GET_DIRTY_LOG for each loop)*/
 #define TEST_HOST_LOOP_N		2UL
 
+static int nr_vcpus = 1;
+static uint64_t guest_percpu_mem_size = DEFAULT_PER_VCPU_MEM_SIZE;
+
 /* Host variables */
 static bool host_quit;
 static uint64_t iteration;
-static uint64_t vcpu_last_completed_iteration[MAX_VCPUS];
+static uint64_t vcpu_last_completed_iteration[KVM_MAX_VCPUS];
 
 static void *vcpu_worker(void *data)
 {
@@ -39,7 +42,7 @@ static void *vcpu_worker(void *data)
 	struct timespec ts_diff;
 	struct timespec total = (struct timespec){0};
 	struct timespec avg;
-	struct vcpu_args *vcpu_args = (struct vcpu_args *)data;
+	struct perf_test_vcpu_args *vcpu_args = (struct perf_test_vcpu_args *)data;
 	int vcpu_id = vcpu_args->vcpu_id;
 
 	vcpu_args_set(vm, vcpu_id, 1, vcpu_id);
@@ -109,7 +112,7 @@ static void run_test(enum vm_guest_mode mode, unsigned long iterations,
 	struct timespec clear_dirty_log_total = (struct timespec){0};
 #endif
 
-	vm = create_vm(mode, nr_vcpus, guest_percpu_mem_size);
+	vm = perf_test_create_vm(mode, nr_vcpus, guest_percpu_mem_size);
 
 	perf_test_args.wr_fract = wr_fract;
 
@@ -127,7 +130,7 @@ static void run_test(enum vm_guest_mode mode, unsigned long iterations,
 	vcpu_threads = malloc(nr_vcpus * sizeof(*vcpu_threads));
 	TEST_ASSERT(vcpu_threads, "Memory allocation failed");
 
-	add_vcpus(vm, nr_vcpus, guest_percpu_mem_size);
+	perf_test_setup_vcpus(vm, nr_vcpus, guest_percpu_mem_size);
 
 	sync_global_to_guest(vm, perf_test_args);
 
@@ -153,7 +156,7 @@ static void run_test(enum vm_guest_mode mode, unsigned long iterations,
 
 	/* Enable dirty logging */
 	clock_gettime(CLOCK_MONOTONIC, &start);
-	vm_mem_region_set_flags(vm, TEST_MEM_SLOT_INDEX,
+	vm_mem_region_set_flags(vm, PERF_TEST_MEM_SLOT_INDEX,
 				KVM_MEM_LOG_DIRTY_PAGES);
 	ts_diff = timespec_diff_now(start);
 	pr_info("Enabling dirty logging time: %ld.%.9lds\n\n",
@@ -180,7 +183,7 @@ static void run_test(enum vm_guest_mode mode, unsigned long iterations,
 			iteration, ts_diff.tv_sec, ts_diff.tv_nsec);
 
 		clock_gettime(CLOCK_MONOTONIC, &start);
-		kvm_vm_get_dirty_log(vm, TEST_MEM_SLOT_INDEX, bmap);
+		kvm_vm_get_dirty_log(vm, PERF_TEST_MEM_SLOT_INDEX, bmap);
 
 		ts_diff = timespec_diff_now(start);
 		get_dirty_log_total = timespec_add(get_dirty_log_total,
@@ -190,7 +193,7 @@ static void run_test(enum vm_guest_mode mode, unsigned long iterations,
 
 #ifdef USE_CLEAR_DIRTY_LOG
 		clock_gettime(CLOCK_MONOTONIC, &start);
-		kvm_vm_clear_dirty_log(vm, TEST_MEM_SLOT_INDEX, bmap, 0,
+		kvm_vm_clear_dirty_log(vm, PERF_TEST_MEM_SLOT_INDEX, bmap, 0,
 				       host_num_pages);
 
 		ts_diff = timespec_diff_now(start);
@@ -208,7 +211,7 @@ static void run_test(enum vm_guest_mode mode, unsigned long iterations,
 
 	/* Disable dirty logging */
 	clock_gettime(CLOCK_MONOTONIC, &start);
-	vm_mem_region_set_flags(vm, TEST_MEM_SLOT_INDEX, 0);
+	vm_mem_region_set_flags(vm, PERF_TEST_MEM_SLOT_INDEX, 0);
 	ts_diff = timespec_diff_now(start);
 	pr_info("Disabling dirty logging time: %ld.%.9lds\n",
 		ts_diff.tv_sec, ts_diff.tv_nsec);
@@ -227,8 +230,7 @@ static void run_test(enum vm_guest_mode mode, unsigned long iterations,
 
 	free(bmap);
 	free(vcpu_threads);
-	ucall_uninit(vm);
-	kvm_vm_free(vm);
+	perf_test_destroy_vm(vm);
 }
 
 struct guest_mode {
