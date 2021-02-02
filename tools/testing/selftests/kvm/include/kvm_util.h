@@ -80,12 +80,6 @@ struct vm_guest_mode_params {
 };
 extern const struct vm_guest_mode_params vm_guest_mode_params[];
 
-enum vm_mem_backing_src_type {
-	VM_MEM_SRC_ANONYMOUS,
-	VM_MEM_SRC_ANONYMOUS_THP,
-	VM_MEM_SRC_ANONYMOUS_HUGETLB,
-};
-
 int open_kvm_dev_path_or_exit(void);
 int kvm_check_cap(long cap);
 int vm_check_cap(struct kvm_vm *vm, long cap);
