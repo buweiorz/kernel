@@ -3046,6 +3046,7 @@ int memcg_alloc_page_obj_cgroups(struct page *page, struct kmem_cache *s,
 		 * objcg vector should be reused.
 		 */
 		kfree(vec);
+		return 0;
 	}
 
 	kmemleak_not_leak(vec);
