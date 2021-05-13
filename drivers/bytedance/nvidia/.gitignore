@@ -1,0 +1,6 @@
+#
+# nvidia driver .gitignore
+#
+conftest/
+conftest1602179.c
+nv_compiler.h
