@@ -10,6 +10,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <time.h>
+#include <sys/syscall.h>
 
 #include "test_util.h"
 
@@ -108,4 +109,18 @@ void print_skip(const char *fmt, ...)
 	vprintf(fmt, ap);
 	va_end(ap);
 	puts(", skipping test");
+}
+
+long get_run_delay(void)
+{
+	char path[64];
+	long val[2];
+	FILE *fp;
+
+	sprintf(path, "/proc/%ld/schedstat", syscall(SYS_gettid));
+	fp = fopen(path, "r");
+	fscanf(fp, "%ld %ld ", &val[0], &val[1]);
+	fclose(fp);
+
+	return val[1];
 }
