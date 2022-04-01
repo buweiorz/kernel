@@ -1497,10 +1497,9 @@ int memory_failure(unsigned long pfn, int flags)
 	struct page *hpage;
 	struct page *orig_head;
 	struct dev_pagemap *pgmap;
-	int res = 0;
+	int res;
 	unsigned long page_flags;
 	bool retry = true;
-	static DEFINE_MUTEX(mf_mutex);
 
 	if (!sysctl_memory_failure_recovery)
 		panic("Memory failure on page %lx", pfn);
@@ -1518,21 +1517,16 @@ int memory_failure(unsigned long pfn, int flags)
 		return -ENXIO;
 	}
 
-	mutex_lock(&mf_mutex);
-
 try_again:
-	if (PageHuge(p)) {
-		res = memory_failure_hugetlb(pfn, flags);
-		goto unlock_mutex;
-	}
-
+	if (PageHuge(p))
+		return memory_failure_hugetlb(pfn, flags);
 	if (TestSetPageHWPoison(p)) {
 		pr_err("Memory failure: %#lx: already hardware poisoned\n",
 			pfn);
 		res = -EHWPOISON;
 		if (flags & MF_ACTION_REQUIRED)
 			res = kill_accessing_process(current, pfn, flags);
-		goto unlock_mutex;
+		return 0;
 	}
 
 	orig_head = hpage = compound_head(p);
@@ -1565,19 +1559,17 @@ try_again:
 				res = MF_FAILED;
 			}
 			action_result(pfn, MF_MSG_BUDDY, res);
-			res = res == MF_RECOVERED ? 0 : -EBUSY;
+			return res == MF_RECOVERED ? 0 : -EBUSY;
 		} else {
 			action_result(pfn, MF_MSG_KERNEL_HIGH_ORDER, MF_IGNORED);
-			res = -EBUSY;
+			return -EBUSY;
 		}
-		goto unlock_mutex;
 	}
 
 	if (PageTransHuge(hpage)) {
 		if (try_to_split_thp_page(p, "Memory Failure") < 0) {
 			action_result(pfn, MF_MSG_UNSPLIT_THP, MF_IGNORED);
-			res = -EBUSY;
-			goto unlock_mutex;
+			return -EBUSY;
 		}
 		VM_BUG_ON_PAGE(!page_count(p), p);
 	}
@@ -1601,7 +1593,7 @@ try_again:
 	if (PageCompound(p) && compound_head(p) != orig_head) {
 		action_result(pfn, MF_MSG_DIFFERENT_COMPOUND, MF_IGNORED);
 		res = -EBUSY;
-		goto unlock_page;
+		goto out;
 	}
 
 	/*
@@ -1621,14 +1613,14 @@ try_again:
 		num_poisoned_pages_dec();
 		unlock_page(p);
 		put_page(p);
-		goto unlock_mutex;
+		return 0;
 	}
 	if (hwpoison_filter(p)) {
 		if (TestClearPageHWPoison(p))
 			num_poisoned_pages_dec();
 		unlock_page(p);
 		put_page(p);
-		goto unlock_mutex;
+		return 0;
 	}
 
 	/*
@@ -1652,7 +1644,7 @@ try_again:
 	if (!hwpoison_user_mappings(p, pfn, flags, &p)) {
 		action_result(pfn, MF_MSG_UNMAP_FAILED, MF_IGNORED);
 		res = -EBUSY;
-		goto unlock_page;
+		goto out;
 	}
 
 	/*
@@ -1661,17 +1653,14 @@ try_again:
 	if (PageLRU(p) && !PageSwapCache(p) && p->mapping == NULL) {
 		action_result(pfn, MF_MSG_TRUNCATED_LRU, MF_IGNORED);
 		res = -EBUSY;
-		goto unlock_page;
+		goto out;
 	}
 
 identify_page_state:
 	res = identify_page_state(pfn, p, page_flags);
-	mutex_unlock(&mf_mutex);
 	return res;
-unlock_page:
+out:
 	unlock_page(p);
-unlock_mutex:
-	mutex_unlock(&mf_mutex);
 	return res;
 }
 EXPORT_SYMBOL_GPL(memory_failure);
