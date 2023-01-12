@@ -27,7 +27,10 @@ struct coredump_params {
 	int vma_count;
 	size_t vma_data_size;
 	struct core_vma_metadata *vma_meta;
+	unsigned long flags;
 };
+
+#define COREDUMP_USE_PIPE	0
 
 /*
  * These are the only things you should do on a core-file: use only these
