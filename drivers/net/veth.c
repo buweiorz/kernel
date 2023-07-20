@@ -229,6 +229,14 @@ static void veth_get_channels(struct net_device *dev,
 
 static int veth_set_channels(struct net_device *dev,
 			     struct ethtool_channels *ch);
+static void veth_get_ringparam(struct net_device *dev,
+			       struct ethtool_ringparam *ring)
+{
+	ring->rx_max_pending = VETH_RING_SIZE;
+	ring->tx_max_pending = VETH_RING_SIZE;
+	ring->rx_pending = VETH_RING_SIZE;
+	ring->tx_pending = VETH_RING_SIZE;
+}
 
 static const struct ethtool_ops veth_ethtool_ops = {
 	.get_drvinfo		= veth_get_drvinfo,
@@ -240,6 +248,7 @@ static const struct ethtool_ops veth_ethtool_ops = {
 	.get_ts_info		= ethtool_op_get_ts_info,
 	.get_channels		= veth_get_channels,
 	.set_channels		= veth_set_channels,
+	.get_ringparam		= veth_get_ringparam,
 };
 
 /* general routines */
