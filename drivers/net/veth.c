@@ -26,6 +26,8 @@
 #include <linux/ptr_ring.h>
 #include <linux/bpf_trace.h>
 #include <linux/net_tstamp.h>
+#include <net/xdp_sock_drv.h>
+#include <net/xdp.h>
 
 #define DRV_NAME	"veth"
 #define DRV_VERSION	"1.0"
@@ -919,6 +921,108 @@ static int veth_poll(struct napi_struct *napi, int budget)
 	return done;
 }
 
+static int veth_xsk_tx_xmit(struct veth_sq *sq, struct xsk_buff_pool *xsk_pool, int budget)
+{
+	struct veth_priv *priv, *peer_priv;
+	struct net_device *dev, *peer_dev;
+	struct veth_stats stats = {};
+	struct sk_buff *skb = NULL;
+	struct veth_rq *peer_rq;
+	struct xdp_desc desc;
+	int done = 0;
+
+	dev = sq->dev;
+	priv = netdev_priv(dev);
+	peer_dev = priv->peer;
+	peer_priv = netdev_priv(peer_dev);
+
+	/* todo: queue index must set before this */
+	peer_rq = &peer_priv->rq[sq->queue_index];
+
+	/* set xsk wake up flag, to do: where to disable */
+	if (xsk_uses_need_wakeup(xsk_pool))
+		xsk_set_tx_need_wakeup(xsk_pool);
+
+	while (budget-- > 0) {
+		unsigned int truesize = 0;
+		struct page *page;
+		void *vaddr;
+		void *addr;
+
+		if (!xsk_tx_peek_desc(xsk_pool, &desc))
+			break;
+
+		addr = xsk_buff_raw_get_data(xsk_pool, desc.addr);
+
+		/* can not hold all data in a page */
+		truesize =  SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+		truesize += desc.len + xsk_pool->headroom;
+		if (truesize > PAGE_SIZE) {
+			xsk_tx_completed_addr(xsk_pool, desc.addr);
+			stats.xdp_tx_err++;
+			break;
+		}
+
+		page = dev_alloc_page();
+		if (!page) {
+			xsk_tx_completed_addr(xsk_pool, desc.addr);
+			stats.xdp_tx_err++;
+			break;
+		}
+		vaddr = page_to_virt(page);
+
+		memcpy(vaddr + xsk_pool->headroom, addr, desc.len);
+		xsk_tx_completed_addr(xsk_pool, desc.addr);
+
+		skb = veth_build_skb(vaddr, xsk_pool->headroom, desc.len, PAGE_SIZE);
+		if (!skb) {
+			put_page(page);
+			stats.xdp_tx_err++;
+			break;
+		}
+		skb->protocol = eth_type_trans(skb, peer_dev);
+		napi_gro_receive(&peer_rq->xdp_napi, skb);
+
+		stats.xdp_bytes += desc.len;
+		done++;
+	}
+
+	/* release, move consumer，and wakeup the producer */
+	if (done) {
+		napi_schedule(&peer_rq->xdp_napi);
+		xsk_tx_release(xsk_pool);
+	}
+
+	u64_stats_update_begin(&sq->stats.syncp);
+	sq->stats.vs.xdp_packets += done;
+	sq->stats.vs.xdp_bytes += stats.xdp_bytes;
+	sq->stats.vs.xdp_tx_err += stats.xdp_tx_err;
+	u64_stats_update_end(&sq->stats.syncp);
+
+	return done;
+}
+
+static int veth_poll_tx(struct napi_struct *napi, int budget)
+{
+	struct veth_sq *sq = container_of(napi, struct veth_sq, xdp_napi);
+	struct xsk_buff_pool *pool;
+	int done = 0;
+
+	sq->xsk.last_cpu = smp_processor_id();
+
+	rcu_read_lock();
+	pool = rcu_dereference(sq->xsk.pool);
+	if (pool)
+		done  = veth_xsk_tx_xmit(sq, pool, budget);
+
+	rcu_read_unlock();
+
+	if (done < budget)
+		napi_complete_done(napi, done);
+
+	return done;
+}
+
 static int __veth_napi_enable_range(struct net_device *dev, int start, int end)
 {
 	struct veth_priv *priv = netdev_priv(dev);
@@ -972,6 +1076,19 @@ static void veth_napi_del_range(struct net_device *dev, int start, int end)
 
 		rq->rx_notify_masked = false;
 		ptr_ring_cleanup(&rq->xdp_ring, veth_ptr_free);
+	}
+}
+
+static void veth_napi_del_tx(struct net_device *dev)
+{
+	struct veth_priv *priv = netdev_priv(dev);
+	int i;
+
+	for (i = 0; i < dev->real_num_rx_queues; i++) {
+		struct veth_sq *sq = &priv->sq[i];
+
+		napi_disable(&sq->xdp_napi);
+		__netif_napi_del(&sq->xdp_napi);
 	}
 }
 
@@ -1122,6 +1239,22 @@ static int veth_napi_enable_range(struct net_device *dev, int start, int end)
 		return err;
 	}
 	return err;
+}
+
+static int veth_napi_add_tx(struct net_device *dev)
+{
+	struct veth_priv *priv = netdev_priv(dev);
+	int i;
+
+	for (i = 0; i < dev->real_num_tx_queues; i++) {
+		struct veth_sq *sq = &priv->sq[i];
+
+		sq->queue_index = i;
+		netif_tx_napi_add(dev, &sq->xdp_napi, veth_poll_tx, NAPI_POLL_WEIGHT);
+		napi_enable(&sq->xdp_napi);
+	}
+
+	return 0;
 }
 
 static int veth_napi_enable(struct net_device *dev)
@@ -1517,11 +1650,69 @@ err:
 	return err;
 }
 
+static int veth_xsk_pool_enable(struct net_device *dev, struct xsk_buff_pool *pool, u16 qid)
+{
+	struct veth_priv *priv = netdev_priv(dev);
+	struct net_device *peer_dev = priv->peer;
+	int err = 0;
+
+	if (qid >= dev->real_num_tx_queues)
+		return -EINVAL;
+
+	if (!peer_dev)
+		return -EINVAL;
+
+	pool->dma_check_skip = true;
+
+	/*  enable peer tx xdp here, this side
+	 *  xdp is enable by veth_xdp_set
+	 *  to do: we need to check whther this side is already enable xdp
+	 *  maybe it do not have xdp prog
+	 */
+	err = veth_enable_xdp(priv->peer);
+	if (err)
+		return err;
+
+	/* Here is already protected by rtnl_lock, so rcu_assign_pointer
+	 * is safe.
+	 */
+	rcu_assign_pointer(priv->sq[qid].xsk.pool, pool);
+
+	veth_napi_add_tx(dev);
+
+	return err;
+}
+
+static int veth_xsk_pool_disable(struct net_device *dev, u16 qid)
+{
+	struct veth_priv *priv = netdev_priv(dev);
+	int err = 0;
+
+	if (qid >= dev->real_num_tx_queues)
+		return -EINVAL;
+
+	veth_disable_xdp(priv->peer);
+	veth_napi_del_tx(dev);
+
+	rcu_assign_pointer(priv->sq[qid].xsk.pool, NULL);
+	return err;
+}
+
+static int veth_xsk_pool_setup(struct net_device *dev, struct netdev_bpf *xdp)
+{
+	if (xdp->xsk.pool)
+		return veth_xsk_pool_enable(dev, xdp->xsk.pool, xdp->xsk.queue_id);
+	else
+		return veth_xsk_pool_disable(dev, xdp->xsk.queue_id);
+}
+
 static int veth_xdp(struct net_device *dev, struct netdev_bpf *xdp)
 {
 	switch (xdp->command) {
 	case XDP_SETUP_PROG:
 		return veth_xdp_set(dev, xdp->prog, xdp->extack);
+	case XDP_SETUP_XSK_POOL:
+		return veth_xsk_pool_setup(dev, xdp);
 	default:
 		return -EINVAL;
 	}
