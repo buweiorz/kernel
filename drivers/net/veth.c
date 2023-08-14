@@ -93,6 +93,7 @@ struct veth_priv {
 	struct bpf_prog		*_xdp_prog;
 	struct veth_rq		*rq;
 	struct veth_sq		*sq;
+	atomic_t		sq_enable_count;
 	unsigned int		requested_headroom;
 };
 
@@ -1080,17 +1081,10 @@ static void veth_napi_del_range(struct net_device *dev, int start, int end)
 	}
 }
 
-static void veth_napi_del_tx(struct net_device *dev)
+static inline void veth_napi_del_tx_one(struct veth_sq *sq)
 {
-	struct veth_priv *priv = netdev_priv(dev);
-	int i;
-
-	for (i = 0; i < dev->real_num_rx_queues; i++) {
-		struct veth_sq *sq = &priv->sq[i];
-
-		napi_disable(&sq->xdp_napi);
-		__netif_napi_del(&sq->xdp_napi);
-	}
+	napi_disable(&sq->xdp_napi);
+	__netif_napi_del(&sq->xdp_napi);
 }
 
 static void veth_napi_del(struct net_device *dev)
@@ -1242,20 +1236,11 @@ static int veth_napi_enable_range(struct net_device *dev, int start, int end)
 	return err;
 }
 
-static int veth_napi_add_tx(struct net_device *dev)
+static inline void veth_napi_add_tx_one(struct net_device *dev, struct veth_sq *sq, u16 qid)
 {
-	struct veth_priv *priv = netdev_priv(dev);
-	int i;
-
-	for (i = 0; i < dev->real_num_tx_queues; i++) {
-		struct veth_sq *sq = &priv->sq[i];
-
-		sq->queue_index = i;
-		netif_tx_napi_add(dev, &sq->xdp_napi, veth_poll_tx, NAPI_POLL_WEIGHT);
-		napi_enable(&sq->xdp_napi);
-	}
-
-	return 0;
+	sq->queue_index = qid;
+	netif_tx_napi_add(dev, &sq->xdp_napi, veth_poll_tx, NAPI_POLL_WEIGHT);
+	napi_enable(&sq->xdp_napi);
 }
 
 static int veth_napi_enable(struct net_device *dev)
@@ -1454,6 +1439,8 @@ static int veth_alloc_queues(struct net_device *dev)
 		priv->sq[i].xsk.last_cpu = U32_MAX;
 		u64_stats_init(&priv->sq[i].stats.syncp);
 	}
+
+	atomic_set(&priv->sq_enable_count, 0);
 
 	return 0;
 }
@@ -1703,6 +1690,7 @@ static int veth_xsk_pool_enable(struct net_device *dev, struct xsk_buff_pool *po
 {
 	struct veth_priv *priv = netdev_priv(dev);
 	struct net_device *peer_dev = priv->peer;
+	struct veth_priv *peer_priv;
 	int err = 0;
 
 	if (qid >= dev->real_num_tx_queues)
@@ -1713,14 +1701,19 @@ static int veth_xsk_pool_enable(struct net_device *dev, struct xsk_buff_pool *po
 
 	pool->dma_check_skip = true;
 
-	/*  enable peer tx xdp here, this side
-	 *  xdp is enable by veth_xdp_set
-	 *  to do: we need to check whther this side is already enable xdp
-	 *  maybe it do not have xdp prog
+	peer_priv = netdev_priv(peer_dev);
+
+	/* enable peer tx xdp here, this side
+	 * xdp is enable by veth_xdp_set
+	 * we need to check whther this side is already enable xdp
 	 */
-	err = veth_enable_xdp(priv->peer);
-	if (err)
-		return err;
+	if (!(peer_priv->_xdp_prog) && (!veth_gro_requested(peer_dev)) &&
+	    !atomic_read(&priv->sq_enable_count)) {
+		/*  peer should enable napi*/
+		err = veth_napi_enable(peer_dev);
+		if (err)
+			return err;
+	}
 
 	/* Here is already protected by rtnl_lock, so rcu_assign_pointer
 	 * is safe.
@@ -1728,7 +1721,9 @@ static int veth_xsk_pool_enable(struct net_device *dev, struct xsk_buff_pool *po
 	rcu_assign_pointer(priv->sq[qid].xsk.pool, pool);
 	priv->sq[qid].xsk.last_cpu = U32_MAX;
 
-	veth_napi_add_tx(dev);
+	veth_napi_add_tx_one(dev, &priv->sq[qid], qid);
+
+	atomic_inc(&priv->sq_enable_count);
 
 	return err;
 }
@@ -1736,13 +1731,25 @@ static int veth_xsk_pool_enable(struct net_device *dev, struct xsk_buff_pool *po
 static int veth_xsk_pool_disable(struct net_device *dev, u16 qid)
 {
 	struct veth_priv *priv = netdev_priv(dev);
+	struct net_device *peer_dev = priv->peer;
+	struct veth_priv *peer_priv;
 	int err = 0;
 
 	if (qid >= dev->real_num_tx_queues)
 		return -EINVAL;
 
-	veth_disable_xdp(priv->peer);
-	veth_napi_del_tx(dev);
+	if (!peer_dev)
+		return -EINVAL;
+
+	peer_priv = netdev_priv(peer_dev);
+	atomic_dec(&priv->sq_enable_count);
+	if (!(peer_priv->_xdp_prog) && (!veth_gro_requested(peer_dev)) &&
+	    !atomic_read(&priv->sq_enable_count)) {
+		/*  disable peer napi */
+		veth_napi_del(peer_dev);
+	}
+
+	veth_napi_del_tx_one(&priv->sq[qid]);
 
 	priv->sq[qid].xsk.last_cpu = U32_MAX;
 	rcu_assign_pointer(priv->sq[qid].xsk.pool, NULL);
