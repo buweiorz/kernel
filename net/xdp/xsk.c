@@ -347,6 +347,42 @@ out:
 }
 EXPORT_SYMBOL(xsk_tx_peek_desc);
 
+bool xsk_tx_peek_desc_sock(struct xsk_buff_pool *pool, struct xdp_desc *desc, struct xdp_sock **xsk)
+{
+	struct xdp_sock *xs;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(xs, &pool->xsk_tx_list, tx_list) {
+		if (xsk && *xsk && xs != *xsk)
+			continue;
+
+		if (!xskq_cons_peek_desc(xs->tx, desc, pool)) {
+			xs->tx->queue_empty_descs++;
+			continue;
+		}
+
+		if (xsk)
+			*xsk = xs;
+
+		/* This is the backpressure mechanism for the Tx path.
+		 * Reserve space in the completion queue and only proceed
+		 * if there is space in it. This avoids having to implement
+		 * any buffering in the Tx path.
+		 */
+		if (xskq_prod_reserve_addr(pool->cq, desc->addr))
+			goto out;
+
+		xskq_cons_release(xs->tx);
+		rcu_read_unlock();
+		return true;
+	}
+
+out:
+	rcu_read_unlock();
+	return false;
+}
+EXPORT_SYMBOL(xsk_tx_peek_desc_sock);
+
 static int xsk_wakeup(struct xdp_sock *xs, u8 flags)
 {
 	struct net_device *dev = xs->dev;

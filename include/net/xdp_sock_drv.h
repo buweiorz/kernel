@@ -14,6 +14,8 @@
 void xsk_tx_completed(struct xsk_buff_pool *pool, u32 nb_entries);
 void xsk_tx_completed_addr(struct xsk_buff_pool *pool, u64 addr);
 bool xsk_tx_peek_desc(struct xsk_buff_pool *pool, struct xdp_desc *desc);
+bool xsk_tx_peek_desc_sock(struct xsk_buff_pool *pool, struct xdp_desc *desc,
+			   struct xdp_sock **xsk);
 void xsk_tx_release(struct xsk_buff_pool *pool);
 struct xsk_buff_pool *xsk_get_pool_from_qid(struct net_device *dev,
 					    u16 queue_id);
@@ -129,6 +131,12 @@ static inline void xsk_tx_completed_addr(struct xsk_buff_pool *pool, u64 addr)
 
 static inline bool xsk_tx_peek_desc(struct xsk_buff_pool *pool,
 				    struct xdp_desc *desc)
+{
+	return false;
+}
+
+static inline bool xsk_tx_peek_desc_sock(struct xsk_buff_pool *pool,
+				   struct xdp_desc *desc, struct xdp_sock **xsk)
 {
 	return false;
 }
