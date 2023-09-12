@@ -29,6 +29,8 @@
 #include "xdp_umem.h"
 #include "xsk.h"
 
+#include <trace/events/xdp.h>
+
 #define TX_BATCH_SIZE 16
 
 static DEFINE_PER_CPU(struct list_head, xskmap_flush_list);
@@ -347,9 +349,17 @@ out:
 }
 EXPORT_SYMBOL(xsk_tx_peek_desc);
 
+static inline u32 xskq_cons_present_entries_tmp(struct xsk_queue *q)
+{
+	/* No barriers needed since data is not accessed */
+	return READ_ONCE(q->ring->producer) - q->cached_cons;
+}
+
 bool xsk_tx_peek_desc_sock(struct xsk_buff_pool *pool, struct xdp_desc *desc, struct xdp_sock **xsk)
 {
 	struct xdp_sock *xs;
+	u32 cq_len = 0;
+	u32 tx_len = 0;
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(xs, &pool->xsk_tx_list, tx_list) {
@@ -363,6 +373,11 @@ bool xsk_tx_peek_desc_sock(struct xsk_buff_pool *pool, struct xdp_desc *desc, st
 
 		if (xsk)
 			*xsk = xs;
+
+		cq_len = xskq_cons_present_entries_tmp(pool->cq);
+		tx_len = xskq_cons_present_entries_tmp(xs->tx);
+
+		trace_xsk_tx_peek_desc_sock(pool, xs, pool->cq, cq_len, xs->tx, tx_len);
 
 		/* This is the backpressure mechanism for the Tx path.
 		 * Reserve space in the completion queue and only proceed

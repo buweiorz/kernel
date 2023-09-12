@@ -9,6 +9,7 @@
 #include <linux/filter.h>
 #include <linux/tracepoint.h>
 #include <linux/bpf.h>
+#include <net/xdp_sock_drv.h>
 
 #define __XDP_ACT_MAP(FN)	\
 	FN(ABORTED)		\
@@ -390,6 +391,36 @@ TRACE_EVENT(mem_return_failed,
 		  __print_symbolic(__entry->mem_type, __MEM_TYPE_SYM_TAB),
 		  __entry->page
 	)
+);
+
+TRACE_EVENT(xsk_tx_peek_desc_sock,
+
+	TP_PROTO(struct xsk_buff_pool *pool, struct xdp_sock *xsk, void *cq,
+		u32 cq_len, void *txq, u32 tx_len),
+
+	TP_ARGS(pool, xsk, cq, cq_len, txq, tx_len),
+
+	TP_STRUCT__entry(
+		__field(const struct xsk_buff_pool *, pool)
+		__field(const void *, cq)
+		__field(u32, cq_len)
+		__field(const struct xdp_sock *, xsk)
+		__field(const void *, txq)
+		__field(u32, tx_len)
+	),
+
+	TP_fast_assign(
+		__entry->pool = pool;
+		__entry->cq = cq;
+		__entry->cq_len = cq_len;
+		__entry->xsk = xsk;
+		__entry->txq = txq;
+		__entry->tx_len = tx_len;
+	),
+
+	TP_printk("pool=%p tx_xsk=%p cq=%p cq_len=%d txq=%p tx_len=%d",
+		__entry->pool, __entry->xsk, __entry->cq, __entry->cq_len,
+		__entry->txq, __entry->tx_len)
 );
 
 #endif /* _TRACE_XDP_H */
