@@ -381,7 +381,6 @@ static ssize_t hisi_ptt_filter_show(struct device *dev, struct device_attribute 
 	return sysfs_emit(buf, "0x%05lx\n", filter_val);
 }
 
-<<<<<<< HEAD
 static int hisi_ptt_check_duplicated_filters(struct hisi_ptt *hisi_ptt, u16 devid, bool is_port)
 {
 	struct hisi_ptt_filter_desc *filter;
@@ -408,8 +407,6 @@ static int hisi_ptt_check_duplicated_filters(struct hisi_ptt *hisi_ptt, u16 devi
 	return 0;
 }
 
-=======
->>>>>>> 917eb66eab02 (hwtracing: hisi_ptt: Initialize the filter sysfs attribute when allocation)
 static struct hisi_ptt_filter_desc *
 hisi_ptt_alloc_add_filter(struct hisi_ptt *hisi_ptt, u16 devid, bool is_port)
 {
