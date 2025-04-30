@@ -112,7 +112,17 @@ enum { RPAL_CAP_PKU };
 #define RPAL_EP_ID_MASK (~(0 | RPAL_EP_STATUS_MASK | RPAL_EP_SID_MASK))
 #define RPAL_EP_MAX_ID ((1 << (RPAL_EP_SID_SHIFT - RPAL_EP_ID_SHIFT)) - 1)
 
+#define RPAL_PKU_ENABLED_OFFSET 0
+#define RPAL_PKU_ENABLED_BIT 0
+#if IS_ENABLED(CONFIG_RPAL_PKU)
+#define RPAL_PKU_ENABLED (1 << RPAL_PKU_ENABLED_BIT)
+#else
+#define RPAL_PKU_ENABLED 0
+#endif
+#define RPAL_ENABLED_MASK (RPAL_PKU_ENABLED)
+
 extern unsigned long rpal_cap;
+extern char *proc_rpal_enabled_page;
 
 /*
  * Following structures should have the same memory layout with user.
@@ -412,6 +422,16 @@ static inline struct rpal_service *
 rpal_get_task_service(struct task_struct *task)
 {
 	return rpal_get_service(task->rpal_rs);
+}
+
+static inline bool rpal_read_proc_pku_enabled(void)
+{
+	return READ_ONCE(*(proc_rpal_enabled_page + RPAL_PKU_ENABLED_OFFSET));
+}
+
+static inline void rpal_write_proc_pku_enabled(char val)
+{
+	WRITE_ONCE(*(proc_rpal_enabled_page + RPAL_PKU_ENABLED_OFFSET), val);
 }
 
 void exit_rpal(bool group_dead);

@@ -819,6 +819,12 @@ struct rpal_service *rpal_alloc_and_register_service(void)
 		return NULL;
 	}
 
+	/* disable rpal by command line */
+	if (proc_rpal_enabled_page != NULL) {
+		if (!rpal_read_proc_pku_enabled())
+			return NULL;
+	}
+
 	id = rpal_alloc_service_id();
 	if (!is_valid_id(id))
 		return NULL;

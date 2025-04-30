@@ -10,6 +10,8 @@
 
 #include "internal.h"
 
+char *proc_rpal_enabled_page;
+
 int rpal_open(struct inode *inode,
 			     struct file *file)
 {
@@ -117,11 +119,89 @@ const struct proc_ops proc_rpal_operations = {
 	.proc_poll = rpal_poll,
 };
 
+int rpal_enabled_show(struct seq_file *m, void *p)
+{
+	seq_printf(m, "pku: %d\n", rpal_read_proc_pku_enabled());
+
+	return 0;
+}
+
+int rpal_enabled_open(struct inode *inode,
+			     struct file *file)
+{
+	return single_open(file, rpal_enabled_show, NULL);
+}
+
+#define RPAL_BUF_SIZE 0x20
+ssize_t rpal_enabled_write(struct file *file, const char __user *buf, size_t count,
+			     loff_t *ppos)
+{
+	char kbuf[RPAL_BUF_SIZE];
+	int value = -1;
+	int ret;
+
+	memset(kbuf, 0, sizeof(kbuf));
+
+	if (count >= RPAL_BUF_SIZE)
+		return -EINVAL;
+
+	ret = copy_from_user(kbuf, buf, count);
+
+	if (ret)
+		return -EAGAIN;
+
+	ret = kstrtoint(kbuf, 0, &value);
+	if (!ret && value >= 0 && value <= RPAL_ENABLED_MASK) {
+		rpal_write_proc_pku_enabled(((value & RPAL_PKU_ENABLED)
+			 && rpal_pku_enabled()) ? 1 : 0);
+		pr_info("rpal_enabled: %d\n", value);
+	}
+
+	return count;
+}
+
+int rpal_enabled_mmap(struct file *filp,
+			     struct vm_area_struct *vma)
+{
+	unsigned long size = (unsigned long)(vma->vm_end - vma->vm_start);
+	int ret;
+
+	if (size != PAGE_SIZE)
+		return -EINVAL;
+
+	ret = remap_pfn_range(vma, vma->vm_start,
+			      page_to_pfn(virt_to_page(proc_rpal_enabled_page)),
+			      size, vma->vm_page_prot);
+
+	return ret;
+}
+
+const struct proc_ops proc_rpal_enabled_operations = {
+	.proc_open = rpal_enabled_open,
+	.proc_read = seq_read,
+	.proc_write = rpal_enabled_write,
+	.proc_mmap = rpal_enabled_mmap,
+};
+
+static void rpal_enabled_init(void)
+{
+	/* We must allocate a new page to avoid exposing other kernel data */
+	proc_rpal_enabled_page = (char *)get_zeroed_page(GFP_KERNEL);
+	if (!proc_rpal_enabled_page) {
+		rpal_err("alloc proc_rpal_enabled_page fail\n");
+		return;
+	}
+
+	rpal_write_proc_pku_enabled(arch_pkeys_enabled() ? 1 : 0);
+	proc_create("rpal_enabled", 0644, NULL, &proc_rpal_enabled_operations);
+}
+
 static int __init proc_rpal_init(void)
 {
 	if (boot_cpu_has(X86_FEATURE_NORPAL))
 		return 0;
 
+	rpal_enabled_init();
 	proc_create("rpal", 0644, NULL, &proc_rpal_operations);
 	return 0;
 }
