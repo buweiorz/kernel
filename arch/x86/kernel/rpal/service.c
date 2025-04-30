@@ -133,6 +133,13 @@ static void rpal_service_data_init(struct rpal_service *rs)
 {
 	spin_lock_init(&rs->lock);
 	mutex_init(&rs->mutex);
+
+	rs->base = 0;
+}
+
+static unsigned long calculate_base_address(int id)
+{
+	return RPAL_ADDRESS_SPACE_LOW + RPAL_ADDR_SPACE_SIZE * id;
 }
 
 static struct rpal_service *rpal_register_service(int service_id)
@@ -158,8 +165,10 @@ static struct rpal_service *rpal_register_service(int service_id)
 	mmgrab(current->mm);
 
 	rs->key = rpal_alloc_service_key();
+	rs->bad_service = false;
 
 	rs->id = service_id;
+	rs->base = calculate_base_address(service_id);
 
 	/*
 	 * The reference comes from:

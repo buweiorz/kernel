@@ -20,6 +20,43 @@
 #define rpal_err(x...) pr_err(RPAL_ERROR_MSG x)
 #define rpal_err_ratelimited(x...) pr_err_ratelimited(RPAL_ERROR_MSG x)
 
+/*
+ * Process Virtual Address Space Layout (For 4-level Paging)
+ *  |-------------|
+ *  |  No Mapping |
+ *  |-------------| <-- 64 KB (mmap_min_addr)
+ *  |     ...     |
+ *  |-------------| <-- 1 * 512GB
+ *  |  service 0  |
+ *  |-------------| <-- 2 * 512 GB
+ *  |  Service 1  |
+ *  |-------------| <-- 3 * 512 GB
+ *  |  Service 2  |
+ *  |-------------| <-- 4 * 512 GB
+ *  |     ...     |
+ *  |-------------| <-- 255 * 512 GB
+ *  | Service 254 |
+ *  |-------------| <-- 128 TB
+ *  |             |
+ *  |     ...     |
+ *  |-------------| <-- PAGE_OFFSET
+ *  |             |
+ *  |    Kernel   |
+ *  |_____________|
+ *
+ */
+#define RPAL_ADDR_SPACE_SIZE (_AC(512, UL) * SZ_1G)
+/* We need a randomize base mask due to too large randomize space. */
+#define RPAL_RAND_ADDR_SPACE_MASK _AC(0xffffffff0, UL)
+/* To calculate randomized space, We limit max randomized bits to 20 on frame number */
+#define RPAL_MAX_RAND_BITS 20
+
+#define RPAL_NR_ADDR_SPACE 256
+#define RPAL_NR_PROCESS (RPAL_NR_ADDR_SPACE - 1)
+
+#define RPAL_ADDRESS_SPACE_LOW                                                 \
+		((RPAL_NR_ADDR_SPACE - RPAL_NR_PROCESS) * RPAL_ADDR_SPACE_SIZE)
+#define RPAL_ADDRESS_SPACE_HIGH (RPAL_NR_ADDR_SPACE * RPAL_ADDR_SPACE_SIZE)
 
 /*
  * The first 512GB is reserved due to mmap_min_addr.
@@ -38,8 +75,13 @@ struct rpal_service {
 	int id;
 	/* key which is unique to each service process */
 	u64 key;
+	/* base address of this service */
+	unsigned long base;
 	/* mm_struct of the service */
 	struct mm_struct *mm;
+	/* bad rpal binary */
+	bool bad_service;
+
 	/* Fields below may change. */
 	spinlock_t lock;
 	/* Mutex for service level operations */
@@ -70,7 +112,22 @@ static inline void exit_rpal(bool group_dead) { }
 static inline void copy_rpal(struct task_struct *p) { }
 #endif
 
+static inline unsigned long rpal_get_base(struct rpal_service *rs)
+{
+	return rs->base;
+}
+
+static inline unsigned long rpal_get_top(struct rpal_service *rs)
+{
+	return rs->base + RPAL_ADDR_SPACE_SIZE;
+}
+
 /* service.c */
 struct rpal_service *rpal_alloc_and_register_service(void);
 void rpal_unregister_service(struct rpal_service *rs);
+
+/* mm.c */
+int rpal_balloon_init(unsigned long base);
+
+void rpal_pick_mmap_base(struct mm_struct *mm, struct rlimit *rlim_stack);
 #endif /* _LINUX_RPAL_H_ */

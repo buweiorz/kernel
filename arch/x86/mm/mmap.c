@@ -19,6 +19,7 @@
 #include <linux/sched/mm.h>
 #include <linux/compat.h>
 #include <linux/elf-randomize.h>
+#include <linux/rpal.h>
 #include <asm/elf.h>
 #include <asm/io.h>
 
@@ -125,6 +126,15 @@ static void arch_pick_mmap_base(unsigned long *base, unsigned long *legacy_base,
 	else
 		*base = mmap_base(random_factor, task_size, rlim_stack);
 }
+
+#if IS_ENABLED(CONFIG_RPAL)
+void rpal_pick_mmap_base(struct mm_struct *mm, struct rlimit *rlim_stack)
+{
+	arch_pick_mmap_base(&mm->mmap_base, &mm->mmap_legacy_base,
+			arch_rnd(RPAL_MAX_RAND_BITS), rpal_get_top(mm->rpal_rs),
+			rlim_stack);
+}
+#endif
 
 void arch_pick_mmap_layout(struct mm_struct *mm, struct rlimit *rlim_stack)
 {

@@ -837,6 +837,15 @@ static int rpal_create_service(char *e_ident, struct rpal_service **rs,
 		unsigned long rpal_stack_top = STACK_TOP;
 
 		*rs = rpal_alloc_and_register_service();
+		if (*rs != NULL) {
+			*rpal_base = rpal_get_base(*rs);
+			rpal_stack_top = *rpal_base + RPAL_ADDR_SPACE_SIZE;
+			/*
+			 * We need to recalculate the mmap_base, otherwise the address space
+			 * layout randomization will not make any difference.
+			 */
+			rpal_pick_mmap_base(current->mm, &bprm->rlim_stack);
+		}
 		/*
 		 * RPAL process only has a contiguous 512GB address space, Whose base
 		 * address is given by its struct rpal_service. We need to rearrange
@@ -845,6 +854,18 @@ static int rpal_create_service(char *e_ident, struct rpal_service **rs,
 		*retval = setup_arg_pages(bprm,
 					  randomize_stack_top(rpal_stack_top),
 					  executable_stack);
+		/*
+		 * We use memory ballon to avoid kernel allocating vma other than
+		 * the process's 512GB memory.
+		 */
+		if (unlikely(*rs != NULL && rpal_balloon_init(*rpal_base))) {
+			rpal_err("pid: %d, comm: %s: rpal balloon init fail\n",
+					 current->pid, current->comm);
+			rpal_unregister_service(*rs);
+			*rs = NULL;
+			*retval = -EINVAL;
+			goto out;
+		}
 	} else {
 		*retval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP),
 					  executable_stack);
@@ -1125,6 +1146,21 @@ out_free_interp:
 		 * the ET_DYN load_addr calculations, proceed normally.
 		 */
 		if (elf_ex->e_type == ET_EXEC || load_addr_set) {
+#if IS_ENABLED(CONFIG_RPAL)
+			/*
+			 * If We load MAP_FIXED binary, it will either fail when
+			 * doing mmap, as we have done the memory balloon before,
+			 * or work well, where we are so lucky to have fixed address
+			 * in it's RPAL address space. A MAP_FIXED binary should
+			 * by no means be a RPAL service. Here we only print
+			 * an error. Maybe we will handle it in the future.
+			 */
+			if (unlikely(rs != NULL && elf_ex->e_type == ET_EXEC)) {
+				rpal_err("pid: %d, common: %s, load a binary with MAP_FIXED segment\n",
+						 current->pid, current->comm);
+				rs->bad_service = true;
+			}
+#endif
 			elf_flags |= MAP_FIXED;
 		} else if (elf_ex->e_type == ET_DYN) {
 			/*
@@ -1164,6 +1200,18 @@ out_free_interp:
 				alignment = maximum_alignment(elf_phdata, elf_ex->e_phnum);
 				if (alignment)
 					load_bias &= ~(alignment - 1);
+#if IS_ENABLED(CONFIG_RPAL)
+				/*
+				 * For rpal process, its load_bias must fit into its
+				 * 512GB address space. So we need to recaculate the
+				 * base address and the randomized address range.
+				 */
+				if (rs != NULL) {
+					load_bias -= ELF_ET_DYN_BASE;
+					load_bias &= RPAL_RAND_ADDR_SPACE_MASK;
+					load_bias += rpal_base;
+				}
+#endif
 				elf_flags |= MAP_FIXED;
 			} else
 				load_bias = 0;
@@ -1334,8 +1382,15 @@ out_free_interp:
 		 * growing down), and into the unused ELF_ET_DYN_BASE region.
 		 */
 		if (IS_ENABLED(CONFIG_ARCH_HAS_ELF_RANDOMIZE) &&
-		    elf_ex->e_type == ET_DYN && !interpreter)
-			mm->brk = mm->start_brk = ELF_ET_DYN_BASE;
+		    elf_ex->e_type == ET_DYN && !interpreter) {
+#if IS_ENABLED(CONFIG_RPAL)
+			if (rs && !rs->bad_service)
+				current->mm->brk = current->mm->start_brk =
+						rpal_base;
+			else
+#endif
+				mm->brk = mm->start_brk = ELF_ET_DYN_BASE;
+		}
 
 		mm->brk = mm->start_brk = arch_randomize_brk(mm);
 #ifdef compat_brk_randomized
