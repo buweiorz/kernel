@@ -47,6 +47,7 @@
 #include <linux/pkeys.h>
 #include <linux/oom.h>
 #include <linux/sched/mm.h>
+#include <linux/rpal.h>
 
 #include <linux/uaccess.h>
 #include <asm/cacheflush.h>
@@ -3198,6 +3199,9 @@ void exit_mmap(struct mm_struct *mm)
 		cond_resched();
 	}
 	vm_unacct_memory(nr_accounted);
+#if IS_ENABLED(CONFIG_RPAL)
+	rpal_exit_mmap(mm);
+#endif
 }
 
 /* Insert vm structure into process list sorted by address

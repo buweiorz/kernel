@@ -10,6 +10,45 @@
 #include "internal.h"
 
 bool rpal_inited;
+unsigned long rpal_cap;
+
+static long rpal_cmd_get_api_version_and_cap(void __user *p)
+{
+	struct rpal_version_info rvi;
+	int ret;
+
+	rvi.compat_version = RPAL_COMPAT_VERSION;
+	rvi.api_version = RPAL_API_VERSION;
+	rvi.cap = rpal_cap;
+
+	ret = copy_to_user(p, &rvi, sizeof(rvi));
+	if (ret)
+		goto fail;
+
+	return 0;
+
+fail:
+	return -1;
+}
+
+long rpal_ctl(unsigned long cmd, unsigned long arg0, unsigned long arg1)
+{
+	struct rpal_service *cur = rpal_current_service();
+	long ret;
+
+	switch (cmd) {
+	case RPAL_CMD_GET_API_VERSION_AND_CAP:
+		ret = rpal_cmd_get_api_version_and_cap((void __user *)arg0);
+		break;
+	case RPAL_CMD_GET_SERVICE_KEY:
+		ret = (long)cur->key;
+		break;
+	default:
+		ret = -RPAL_ERR_BAD_ARG;
+		break;
+	}
+	return ret;
+}
 
 static bool check_hardware_features(void)
 {
@@ -24,6 +63,8 @@ static bool check_hardware_features(void)
 int __init rpal_init(void)
 {
 	int ret = 0;
+
+	rpal_cap = 0;
 
 	if (!check_hardware_features())
 		goto fail;

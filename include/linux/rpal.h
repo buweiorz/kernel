@@ -66,6 +66,48 @@
 #define RPAL_NR_ID 254
 #define RPAL_INVALID_ID -1
 
+/* No more than 16 services can be requested due to limitation of MPK. */
+#define MAX_REQUEST_SERVICE 16
+
+/*
+ * Following structures should have the same memory layout with user.
+ * It seems nothing being different between kernel and user structure
+ * padding by different C compilers on x86_64, so we need to do nothing
+ * special here.
+ */
+/* Begin */
+struct rpal_version_info {
+	int compat_version;
+	int api_version;
+	unsigned long cap;
+};
+
+struct rpal_ctl_args {
+	unsigned long __user *ret;
+	unsigned long cmd;
+	unsigned long arg0;
+	unsigned long arg1;
+};
+/* End */
+
+#define RPAL_MAX_SHARED_PAGES 1024
+struct rpal_shared_page {
+	unsigned long user_start;
+	unsigned long user_end;
+	unsigned long kernel_start;
+	struct page *page;
+	int npage;
+	atomic_t refcnt;
+	struct list_head list;
+};
+
+struct rpal_poll_data {
+	spinlock_t poll_lock;
+	u64 dead_keys[RPAL_NR_ID];
+	DECLARE_BITMAP(dead_key_bitmap, RPAL_NR_ID);
+	wait_queue_head_t rpal_waitqueue;
+};
+
 struct rpal_service {
 	/* Fields below should never change after initialization. */
 	char *name;
@@ -87,8 +129,15 @@ struct rpal_service {
 	/* Mutex for service level operations */
 	struct mutex mutex;
 
+	/* pinned page for sender and receiver */
+	atomic_t nr_shared_pages;
+	struct list_head shared_pages;
+
 	/* delayed service put work */
 	struct delayed_work delayed_put_work;
+
+	/* Dead keys */
+	struct rpal_poll_data rpd;
 
 	/* Hash table list for this service */
 	struct hlist_node hlist;
@@ -128,6 +177,7 @@ void rpal_unregister_service(struct rpal_service *rs);
 
 /* mm.c */
 int rpal_balloon_init(unsigned long base);
+void rpal_exit_mmap(struct mm_struct *mm);
 
 void rpal_pick_mmap_base(struct mm_struct *mm, struct rlimit *rlim_stack);
 #endif /* _LINUX_RPAL_H_ */
