@@ -216,6 +216,9 @@ struct task_struct init_task
 #endif
 #if IS_ENABLED(CONFIG_RPAL)
 	.rpal_rs = NULL,
+	.rpal_cd = NULL,
+	.rpal_sd = NULL,
+	.rpal_flag = 0,
 #endif
 };
 EXPORT_SYMBOL(init_task);

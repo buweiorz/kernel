@@ -12,6 +12,31 @@
 bool rpal_inited;
 unsigned long rpal_cap;
 
+
+struct task_struct *rpal_find_next_task(unsigned long fsbase)
+{
+	struct rpal_service *cur = rpal_current_service();
+	struct rpal_service *tgt;
+	struct task_struct *tsk = NULL;
+	int i;
+
+	tgt = rpal_get_mapped_service_by_addr(cur, fsbase);
+	if (unlikely(!tgt)) {
+		pr_debug("rpal debug: cannot find legal rs, fsbase: 0x%016lx\n",
+			 fsbase);
+		return NULL;
+	}
+	for (i = 0; i < RPAL_MAX_RECEIVER_NUM; ++i) {
+		if (tgt->fs_tsk_map[i].fsbase == fsbase) {
+			tsk = tgt->fs_tsk_map[i].tsk;
+			break;
+		}
+	}
+	rpal_put_service(tgt);
+
+	return tsk;
+}
+
 static long rpal_cmd_get_api_version_and_cap(void __user *p)
 {
 	struct rpal_version_info rvi;
@@ -29,6 +54,31 @@ static long rpal_cmd_get_api_version_and_cap(void __user *p)
 
 fail:
 	return -1;
+}
+
+static long rpal_cmd_register_thread(unsigned long arg0, unsigned long arg1)
+{
+	long ret;
+
+	switch (arg1) {
+	case RPAL_REGISTER_SENDER_THREAD:
+		ret = rpal_register_sender(arg0);
+		break;
+	case RPAL_REGISTER_RECEIVER_THREAD:
+		ret = rpal_register_receiver(arg0);
+		break;
+	case RPAL_UNREGISTER_SENDER_THREAD:
+		ret = rpal_unregister_sender();
+		break;
+	case RPAL_UNREGISTER_RECEIVER_THREAD:
+		ret = rpal_unregister_receiver();
+		break;
+	default:
+		ret = -RPAL_ERR_BAD_ARG;
+		break;
+	}
+
+	return ret;
 }
 
 long rpal_ctl(unsigned long cmd, unsigned long arg0, unsigned long arg1)
@@ -55,6 +105,9 @@ long rpal_ctl(unsigned long cmd, unsigned long arg0, unsigned long arg1)
 		break;
 	case RPAL_CMD_DISABLE_SERVICE:
 		ret = rpal_disable_service();
+		break;
+	case RPAL_CMD_REGISTER_THREAD:
+		ret = rpal_cmd_register_thread(arg0, arg1);
 		break;
 	default:
 		ret = -RPAL_ERR_BAD_ARG;
@@ -86,9 +139,15 @@ int __init rpal_init(void)
 	if (ret)
 		goto fail;
 
+	ret = rpal_thread_init();
+	if (ret)
+		goto thread_init_fail;
+
 	rpal_inited = true;
 	return 0;
 
+thread_init_fail:
+	rpal_service_exit();
 fail:
 	rpal_err("rpal init fail\n");
 	return -1;

@@ -16,6 +16,7 @@
 #include <linux/blkdev.h>
 #include <linux/kcov.h>
 #include <linux/scs.h>
+#include <linux/rpal.h>
 
 #include <asm/switch_to.h>
 #include <asm/tlb.h>
@@ -2877,6 +2878,30 @@ out:
 
 	return ret;
 }
+
+#if IS_ENABLED(CONFIG_RPAL)
+int rpal_init_thread_pending(struct rpal_common_data *rcd)
+{
+	struct set_affinity_pending *pending;
+
+	pending = kzalloc(sizeof(*pending), GFP_KERNEL);
+	if (!pending)
+		return -ENOMEM;
+	pending->stop_pending = 0;
+	pending->arg = (struct migration_arg){
+		.task = current,
+		.pending = NULL,
+	};
+	rcd->pending = pending;
+	return 0;
+}
+
+void rpal_free_thread_pending(struct rpal_common_data *rcd)
+{
+	if (rcd->pending != NULL)
+		kfree(rcd->pending);
+}
+#endif
 
 /*
  * Change a given task's CPU affinity. Migrate the thread to a

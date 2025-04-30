@@ -989,6 +989,9 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 #endif
 #if IS_ENABLED(CONFIG_RPAL)
 	tsk->rpal_rs = NULL;
+	tsk->rpal_cd = NULL;
+	tsk->rpal_sd = NULL;
+	tsk->rpal_flag = 0;
 #endif
 
 	return tsk;

@@ -69,6 +69,19 @@
 /* No more than 16 services can be requested due to limitation of MPK. */
 #define MAX_REQUEST_SERVICE 16
 
+#define RPAL_KERNEL_PENDING 0x1
+#define RPAL_USER_PENDING 0x2
+
+enum rpal_epoll_status {
+	RPAL_EP_SYS,
+	RPAL_EP_KSYS,
+	RPAL_EP_WAIT,
+	RPAL_EP_APP,
+	RPAL_EP_KAPP,
+	RPAL_EP_READY_WAIT,
+	RPAL_EP_READY_WAIT_LS,
+};
+
 /*
  * Following structures should have the same memory layout with user.
  * It seems nothing being different between kernel and user structure
@@ -80,6 +93,53 @@ struct rpal_version_info {
 	int compat_version;
 	int api_version;
 	unsigned long cap;
+};
+
+
+struct rpal_task_context {
+	u64 r15;
+	u64 r14;
+	u64 r13;
+	u64 r12;
+	u64 rbx;
+	u64 rbp;
+	u64 rip;
+	u64 rsp;
+};
+
+#define RPAL_ERROR_MAGIC 0x98CC98CC
+
+struct rpal_error_context {
+	unsigned long fsbase;
+	u64 erip;
+	u64 ersp;
+	int state;
+};
+
+struct rpal_sender_epoll_context {
+	struct rpal_task_context rtc;
+	u32 sender_id;
+	int magic;
+	struct rpal_error_context ec;
+	s64 start_time;
+	s64 total_time;
+};
+
+#define RPAL_EP_POLL_MAGIC 0xCC98CC98
+
+struct rpal_receiver_epoll_context {
+	struct rpal_task_context rtc;
+	int epfd;
+	void *events;
+	int maxevents;
+	int timeout;
+	int rid;
+	int rpal_ep_poll;
+	atomic_t ep_status;
+	atomic_t ep_pending;
+	atomic_t g_status;
+	u32 pkru;
+	s64 total_time;
 };
 
 struct rpal_ctl_args {
@@ -121,12 +181,54 @@ struct rpal_shared_page {
 	struct list_head list;
 };
 
+struct rpal_fsbase_tsk_map {
+	unsigned long fsbase;
+	struct task_struct *tsk;
+};
+
+struct rpal_common_data {
+	struct task_struct *bp_task;
+	cpumask_t old_mask;
+	int service_id;
+	u64 last_clock;
+	void *pending;
+	void *ptr;
+};
+
+struct rpal_sender_data {
+	struct rpal_common_data *rcd;
+	struct rpal_shared_page *rsp;
+	struct task_struct *receiver;
+	struct rpal_sender_epoll_context *sec;
+};
+
+struct rpal_receiver_data {
+	struct rpal_common_data *rcd;
+	struct rpal_shared_page *rsp;
+	struct rpal_receiver_epoll_context *rec;
+	void *ep;
+	struct fd f;
+	struct task_struct *sender;
+	struct hrtimer_sleeper ep_sleeper;
+	wait_queue_entry_t ep_wait;
+	struct list_head wake_list;
+	int old_epfd;
+};
+
+struct rpal_waker_struct {
+	spinlock_t lock;
+	struct list_head wake_head;
+	struct delayed_work waker_work;
+};
+
 struct rpal_poll_data {
 	spinlock_t poll_lock;
 	u64 dead_keys[RPAL_NR_ID];
 	DECLARE_BITMAP(dead_key_bitmap, RPAL_NR_ID);
 	wait_queue_head_t rpal_waitqueue;
 };
+
+#define RPAL_MAX_RECEIVER_NUM  16
 
 struct rpal_service {
 	/* Fields below should never change after initialization. */
@@ -154,6 +256,8 @@ struct rpal_service {
 	/* Mutex for service level operations */
 	struct mutex mutex;
 
+	atomic_t thread_cnt;
+
 	atomic_t req_avail_cnt;
 
 	/* pinned page for sender and receiver */
@@ -165,6 +269,12 @@ struct rpal_service {
 
 	/* critical code section */
 	struct rpal_critical_section rcs;
+
+	/* fsbase / pid map */
+	struct rpal_fsbase_tsk_map fs_tsk_map[RPAL_MAX_RECEIVER_NUM];
+
+	/* receiver thread waker */
+	struct rpal_waker_struct waker;
 
 	/* delayed service put work */
 	struct delayed_work delayed_put_work;
@@ -196,10 +306,64 @@ static inline struct rpal_service *rpal_current_service(void)
 {
 	return current->rpal_rs;
 }
+
+static inline bool rpal_test_task_thread_flag(struct task_struct *tsk,
+					      unsigned long bit)
+{
+	return test_bit(bit, &tsk->rpal_flag);
+}
+
+static inline void rpal_set_task_thread_flag(struct task_struct *tsk,
+					     unsigned long bit)
+{
+	set_bit(bit, &tsk->rpal_flag);
+}
+
+static inline void rpal_clear_task_thread_flag(struct task_struct *tsk,
+					       unsigned long bit)
+{
+	clear_bit(bit, &tsk->rpal_flag);
+}
+
+static inline bool rpal_test_and_clear_task_thread_flag(struct task_struct *tsk,
+							unsigned long bit)
+{
+	return test_and_clear_bit(bit, &tsk->rpal_flag);
+}
+
+static inline bool rpal_test_current_thread_flag(unsigned long bit)
+{
+	return test_bit(bit, &current->rpal_flag);
+}
+
+static inline bool rpal_test_and_clear_current_thread_flag(unsigned long bit)
+{
+	return test_and_clear_bit(bit, &current->rpal_flag);
+}
+
+static inline void rpal_set_current_thread_flag(unsigned long bit)
+{
+	set_bit(bit, &current->rpal_flag);
+}
+
+static inline void rpal_clear_current_thread_flag(unsigned long bit)
+{
+	clear_bit(bit, &current->rpal_flag);
+}
+
 void exit_rpal(bool group_dead);
 void copy_rpal(struct task_struct *p);
 #else
 static inline struct rpal_service *rpal_current_service(void) { return NULL; }
+static inline bool rpal_test_task_thread_flag(struct task_struct *tsk,
+	unsigned long bit) { return false; }
+static inline void rpal_set_task_thread_flag(struct task_struct *tsk,
+					     unsigned long bit) { }
+static inline void rpal_clear_task_thread_flag(struct task_struct *tsk,
+					       unsigned long bit) { }
+static inline bool rpal_test_current_thread_flag(unsigned long bit) { return false; }
+static inline void rpal_set_current_thread_flag(unsigned long bit) { }
+static inline void rpal_clear_current_thread_flag(unsigned long bit) { }
 static inline void exit_rpal(bool group_dead) { }
 static inline void copy_rpal(struct task_struct *p) { }
 #endif
@@ -222,6 +386,10 @@ void rpal_unregister_service(struct rpal_service *rs);
 int rpal_balloon_init(unsigned long base);
 void rpal_exit_mmap(struct mm_struct *mm);
 bool rpal_is_correct_address(struct rpal_service *rs, unsigned long address);
+
+/* thread.c */
+int rpal_init_thread_pending(struct rpal_common_data *rcd);
+void rpal_free_thread_pending(struct rpal_common_data *rcd);
 
 void rpal_pick_mmap_base(struct mm_struct *mm, struct rlimit *rlim_stack);
 #endif /* _LINUX_RPAL_H_ */

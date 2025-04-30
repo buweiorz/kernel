@@ -144,6 +144,121 @@ static void delete_service(struct rpal_service *rs)
 	spin_unlock_irqrestore(&hash_table_lock, flags);
 }
 
+struct rpal_service *rpal_get_mapped_service_by_id(struct rpal_service *rs,
+						   int id)
+{
+	struct rpal_service *ret;
+
+	if (!is_valid_id(id))
+		return NULL;
+
+	ret = rpal_get_service(rs->service_map[id].rs);
+
+	return ret;
+}
+
+/* This function must be called after rpal_is_correct_address () */
+struct rpal_service *rpal_get_mapped_service_by_addr(struct rpal_service *rs,
+						     unsigned long addr)
+{
+	int id;
+
+	id = (addr - RPAL_ADDRESS_SPACE_LOW) / RPAL_ADDR_SPACE_SIZE;
+
+	return rpal_get_mapped_service_by_id(rs, id);
+}
+
+void rpal_insert_wake_list(struct rpal_service *rs,
+			   struct rpal_receiver_data *rrd)
+{
+	unsigned long flags;
+	struct rpal_waker_struct *waker = &rs->waker;
+
+	spin_lock_irqsave(&waker->lock, flags);
+	list_add_tail(&rrd->wake_list, &waker->wake_head);
+	spin_unlock_irqrestore(&waker->lock, flags);
+	pr_debug("rpal debug: [%d] insert wake list\n", current->pid);
+}
+
+void rpal_remove_wake_list(struct rpal_service *rs,
+			   struct rpal_receiver_data *rrd)
+{
+	unsigned long flags;
+	struct rpal_waker_struct *waker = &rs->waker;
+
+	spin_lock_irqsave(&waker->lock, flags);
+	list_del(&rrd->wake_list);
+	spin_unlock_irqrestore(&waker->lock, flags);
+	pr_debug("rpal debug: [%d] remove wake list\n", current->pid);
+}
+
+/* waker->lock must be hold */
+static inline void rpal_wake_all(struct rpal_waker_struct *waker)
+{
+	struct task_struct *wake_list[RPAL_MAX_RECEIVER_NUM];
+	struct list_head *list;
+	unsigned long flags;
+	int i, cnt = 0;
+
+	spin_lock_irqsave(&waker->lock, flags);
+	list_for_each(list, &waker->wake_head) {
+		struct task_struct *task;
+		struct rpal_receiver_epoll_context *rec;
+		struct rpal_receiver_data *rrd;
+		int pending;
+
+		rrd = list_entry(list, struct rpal_receiver_data, wake_list);
+		task = rrd->rcd->bp_task;
+		rec = rrd->rec;
+
+		pending = atomic_read(&rec->ep_pending) & RPAL_USER_PENDING;
+
+		if (rpal_test_task_thread_flag(task, RPAL_WAKE_BIT) ||
+		    (pending && atomic_cmpxchg(&rec->ep_status, RPAL_EP_WAIT,
+					       RPAL_EP_SYS) == RPAL_EP_WAIT)) {
+			wake_list[cnt] = task;
+			cnt++;
+		}
+	}
+	spin_unlock_irqrestore(&waker->lock, flags);
+
+	for (i = 0; i < cnt; i++)
+		wake_up_process(wake_list[i]);
+}
+
+void rpal_wake_callback(struct work_struct *work)
+{
+	struct rpal_waker_struct *waker =
+		container_of(work, struct rpal_waker_struct, waker_work.work);
+
+	rpal_wake_all(waker);
+	/* We check it every ticks */
+	schedule_delayed_work(&waker->waker_work, 1);
+}
+
+static void rpal_enable_waker(struct rpal_waker_struct *waker)
+{
+	INIT_DELAYED_WORK(&waker->waker_work, rpal_wake_callback);
+	schedule_delayed_work(&waker->waker_work, 1);
+	pr_debug("rpal debug: [%d] enable waker\n", current->pid);
+}
+
+static void rpal_disable_waker(struct rpal_waker_struct *waker)
+{
+	unsigned long flags;
+	struct list_head *p, *n;
+
+	cancel_delayed_work_sync(&waker->waker_work);
+	rpal_wake_all(waker);
+	spin_lock_irqsave(&waker->lock, flags);
+	list_for_each_safe(p, n, &waker->wake_head) {
+		list_del_init(p);
+	}
+	INIT_LIST_HEAD(&waker->wake_head);
+	spin_unlock_irqrestore(&waker->lock, flags);
+	pr_debug("rpal debug: [%d] disable waker\n", current->pid);
+}
+
 static inline void set_mapped_service_bitmap(struct rpal_service *rs, int id)
 {
 	set_bit(id, rs->mapped_service_bitmap);
@@ -546,9 +661,14 @@ static void rpal_service_data_init(struct rpal_service *rs)
 	rs->rcs.ret_begin = 0;
 	rs->rcs.ret_end = 0;
 
+	spin_lock_init(&rs->waker.lock);
+	INIT_LIST_HEAD(&rs->waker.wake_head);
+
 	spin_lock_init(&rs->rpd.poll_lock);
 	bitmap_zero(rs->rpd.dead_key_bitmap, RPAL_NR_ID);
 	init_waitqueue_head(&rs->rpd.rpal_waitqueue);
+
+	atomic_set(&rs->thread_cnt, 0);
 }
 
 static unsigned long calculate_base_address(int id)
@@ -590,6 +710,9 @@ static struct rpal_service *rpal_register_service(int service_id)
 	set_bit(RPAL_REQUEST_MAP, &node->type);
 	set_bit(RPAL_REVERSE_MAP, &node->type);
 	bitmap_zero(rs->mapped_service_bitmap, RPAL_NR_ID);
+
+	/* receiver may miss wake up if in lazy switch, try to wake it later */
+	rpal_enable_waker(&rs->waker);
 	/*
 	 * The reference comes from:
 	 * 1. registered service always has one reference
@@ -618,12 +741,16 @@ void rpal_unregister_service(struct rpal_service *rs)
 	if (!rs)
 		return;
 
+	while (atomic_read(&rs->thread_cnt) != 0)
+		schedule();
+
 	delete_service(rs);
 	spin_lock_irqsave(&rs->lock, flags);
 	node = rpal_get_mapped_node(rs, rs->id);
 	node->rs = NULL;
 	node->pkey = 0;
 	spin_unlock_irqrestore(&rs->lock, flags);
+	rpal_disable_waker(&rs->waker);
 	if (unlikely(current->mm->rpal_rs != rs)) {
 		rpal_err("current->mm->rpal_rs (0x%16lx) != rs (0x%16lx)\n",
 			 (unsigned long)current->mm->rpal_rs,
@@ -668,6 +795,7 @@ void exit_rpal(bool group_dead)
 	if (group_dead)
 		rpal_disable_service();
 
+	exit_rpal_thread();
 	if (group_dead)
 		rpal_unregister_service(rs);
 }

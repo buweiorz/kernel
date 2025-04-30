@@ -59,6 +59,9 @@ struct rcu_node;
 struct reclaim_state;
 struct robust_list_head;
 struct root_domain;
+struct rpal_common_data;
+struct rpal_receiver_data;
+struct rpal_sender_data;
 struct rpal_service;
 struct rq;
 struct sched_attr;
@@ -736,6 +739,12 @@ struct task_struct {
 
 #if IS_ENABLED(CONFIG_RPAL)
 	struct rpal_service *rpal_rs;
+	struct rpal_common_data *rpal_cd;
+	union {
+		struct rpal_sender_data *rpal_sd;
+		struct rpal_receiver_data *rpal_rd;
+	};
+	unsigned long rpal_flag;
 #endif
 	/*
 	 * This begins the randomizable portion of task_struct. Only
