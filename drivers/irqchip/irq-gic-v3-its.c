@@ -1352,6 +1352,9 @@ static void its_send_vmovp(struct its_vpe *vpe)
 
 		desc.its_vmovp_cmd.col = &its->collections[col_id];
 		its_send_single_vcommand(its, its_build_vmovp_cmd, &desc);
+		if (is_v4_1(its) && (its->flags &
+			    ITS_FLAGS_WORKAROUND_HISILICON_162100801))
+			its_send_vinvall(its, vpe);
 	}
 }
 
@@ -4784,6 +4787,14 @@ static bool __maybe_unused its_enable_quirk_hip09_162100801(void *data)
 	return true;
 }
 
+static bool __maybe_unused its_enable_quirk_hip09_162100801(void *data)
+{
+	struct its_node *its = data;
+
+	its->flags |= ITS_FLAGS_WORKAROUND_HISILICON_162100801;
+	return true;
+}
+
 static const struct gic_quirk its_quirks[] = {
 #ifdef CONFIG_CAVIUM_ERRATUM_22375
 	{
@@ -4844,6 +4855,14 @@ static const struct gic_quirk its_quirks[] = {
 		.iidr   = 0x0201743b,
 		.mask   = 0xffffffff,
 		.init   = its_enable_rk3588001,
+	},
+#endif
+#ifdef CONFIG_HISILICON_ERRATUM_162100801
+	{
+		.desc = "ITS: Hip09 erratum 162100801",
+		.iidr = 0x00051736,
+		.mask = 0xffffffff,
+		.init = its_enable_quirk_hip09_162100801,
 	},
 #endif
 	{
