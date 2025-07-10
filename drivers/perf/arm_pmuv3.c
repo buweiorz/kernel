@@ -15,7 +15,6 @@
 #include <clocksource/arm_arch_timer.h>
 
 #include <linux/acpi.h>
-#include <linux/bitfield.h>
 #include <linux/clocksource.h>
 #include <linux/kvm_host.h>
 #include <linux/of.h>
@@ -290,71 +289,26 @@ static const struct attribute_group armv8_pmuv3_events_attr_group = {
 	.is_visible = armv8pmu_event_attr_is_visible,
 };
 
-/* User ABI */
-#define ATTR_CFG_FLD_event_CFG		config
-#define ATTR_CFG_FLD_event_LO		0
-#define ATTR_CFG_FLD_event_HI		15
-#define ATTR_CFG_FLD_long_CFG		config1
-#define ATTR_CFG_FLD_long_LO		0
-#define ATTR_CFG_FLD_long_HI		0
-#define ATTR_CFG_FLD_rdpmc_CFG		config1
-#define ATTR_CFG_FLD_rdpmc_LO		1
-#define ATTR_CFG_FLD_rdpmc_HI		1
-#define ATTR_CFG_FLD_threshold_count_CFG	config1 /* PMEVTYPER.TC[0] */
-#define ATTR_CFG_FLD_threshold_count_LO		2
-#define ATTR_CFG_FLD_threshold_count_HI		2
-#define ATTR_CFG_FLD_threshold_compare_CFG	config1 /* PMEVTYPER.TC[2:1] */
-#define ATTR_CFG_FLD_threshold_compare_LO	3
-#define ATTR_CFG_FLD_threshold_compare_HI	4
-#define ATTR_CFG_FLD_threshold_CFG		config1 /* PMEVTYPER.TH */
-#define ATTR_CFG_FLD_threshold_LO		5
-#define ATTR_CFG_FLD_threshold_HI		16
-
-GEN_PMU_FORMAT_ATTR(event);
-GEN_PMU_FORMAT_ATTR(long);
-GEN_PMU_FORMAT_ATTR(rdpmc);
-GEN_PMU_FORMAT_ATTR(threshold_count);
-GEN_PMU_FORMAT_ATTR(threshold_compare);
-GEN_PMU_FORMAT_ATTR(threshold);
+PMU_FORMAT_ATTR(event, "config:0-15");
+PMU_FORMAT_ATTR(long, "config1:0");
+PMU_FORMAT_ATTR(rdpmc, "config1:1");
 
 static int sysctl_perf_user_access __read_mostly;
 
 static bool armv8pmu_event_is_64bit(struct perf_event *event)
 {
-	return ATTR_CFG_GET_FLD(&event->attr, long);
+	return event->attr.config1 & 0x1;
 }
 
 static bool armv8pmu_event_want_user_access(struct perf_event *event)
 {
-	return ATTR_CFG_GET_FLD(&event->attr, rdpmc);
-}
-
-static u32 armv8pmu_event_get_threshold(struct perf_event_attr *attr)
-{
-	return ATTR_CFG_GET_FLD(attr, threshold);
-}
-
-static u8 armv8pmu_event_threshold_control(struct perf_event_attr *attr)
-{
-	u8 th_compare = ATTR_CFG_GET_FLD(attr, threshold_compare);
-	u8 th_count = ATTR_CFG_GET_FLD(attr, threshold_count);
-
-	/*
-	 * The count bit is always the bottom bit of the full control field, and
-	 * the comparison is the upper two bits, but it's not explicitly
-	 * labelled in the Arm ARM. For the Perf interface we split it into two
-	 * fields, so reconstruct it here.
-	 */
-	return (th_compare << 1) | th_count;
+	return event->attr.config1 & 0x2;
 }
 
 static struct attribute *armv8_pmuv3_format_attrs[] = {
 	&format_attr_event.attr,
 	&format_attr_long.attr,
 	&format_attr_rdpmc.attr,
-	&format_attr_threshold.attr,
-	&format_attr_threshold_compare.attr,
-	&format_attr_threshold_count.attr,
 	NULL,
 };
 
@@ -368,7 +322,7 @@ static ssize_t slots_show(struct device *dev, struct device_attribute *attr,
 {
 	struct pmu *pmu = dev_get_drvdata(dev);
 	struct arm_pmu *cpu_pmu = container_of(pmu, struct arm_pmu, pmu);
-	u32 slots = FIELD_GET(ARMV8_PMU_SLOTS, cpu_pmu->reg_pmmir);
+	u32 slots = cpu_pmu->reg_pmmir & ARMV8_PMU_SLOTS_MASK;
 
 	return sysfs_emit(page, "0x%08x\n", slots);
 }
@@ -380,7 +334,8 @@ static ssize_t bus_slots_show(struct device *dev, struct device_attribute *attr,
 {
 	struct pmu *pmu = dev_get_drvdata(dev);
 	struct arm_pmu *cpu_pmu = container_of(pmu, struct arm_pmu, pmu);
-	u32 bus_slots = FIELD_GET(ARMV8_PMU_BUS_SLOTS, cpu_pmu->reg_pmmir);
+	u32 bus_slots = (cpu_pmu->reg_pmmir >> ARMV8_PMU_BUS_SLOTS_SHIFT)
+			& ARMV8_PMU_BUS_SLOTS_MASK;
 
 	return sysfs_emit(page, "0x%08x\n", bus_slots);
 }
@@ -392,7 +347,8 @@ static ssize_t bus_width_show(struct device *dev, struct device_attribute *attr,
 {
 	struct pmu *pmu = dev_get_drvdata(dev);
 	struct arm_pmu *cpu_pmu = container_of(pmu, struct arm_pmu, pmu);
-	u32 bus_width = FIELD_GET(ARMV8_PMU_BUS_WIDTH, cpu_pmu->reg_pmmir);
+	u32 bus_width = (cpu_pmu->reg_pmmir >> ARMV8_PMU_BUS_WIDTH_SHIFT)
+			& ARMV8_PMU_BUS_WIDTH_MASK;
 	u32 val = 0;
 
 	/* Encoded as Log2(number of bytes), plus one */
@@ -404,38 +360,10 @@ static ssize_t bus_width_show(struct device *dev, struct device_attribute *attr,
 
 static DEVICE_ATTR_RO(bus_width);
 
-static u32 threshold_max(struct arm_pmu *cpu_pmu)
-{
-	/*
-	 * PMMIR.THWIDTH is readable and non-zero on aarch32, but it would be
-	 * impossible to write the threshold in the upper 32 bits of PMEVTYPER.
-	 */
-	if (IS_ENABLED(CONFIG_ARM))
-		return 0;
-
-	/*
-	 * The largest value that can be written to PMEVTYPER<n>_EL0.TH is
-	 * (2 ^ PMMIR.THWIDTH) - 1.
-	 */
-	return (1 << FIELD_GET(ARMV8_PMU_THWIDTH, cpu_pmu->reg_pmmir)) - 1;
-}
-
-static ssize_t threshold_max_show(struct device *dev,
-				  struct device_attribute *attr, char *page)
-{
-	struct pmu *pmu = dev_get_drvdata(dev);
-	struct arm_pmu *cpu_pmu = container_of(pmu, struct arm_pmu, pmu);
-
-	return sysfs_emit(page, "0x%08x\n", threshold_max(cpu_pmu));
-}
-
-static DEVICE_ATTR_RO(threshold_max);
-
 static struct attribute *armv8_pmuv3_caps_attrs[] = {
 	&dev_attr_slots.attr,
 	&dev_attr_bus_slots.attr,
 	&dev_attr_bus_width.attr,
-	&dev_attr_threshold_max.attr,
 	NULL,
 };
 
@@ -619,18 +547,11 @@ static void armv8pmu_write_counter(struct perf_event *event, u64 value)
 		armv8pmu_write_hw_counter(event, value);
 }
 
-static void armv8pmu_write_evtype(int idx, unsigned long val)
+static void armv8pmu_write_evtype(int idx, u32 val)
 {
 	u32 counter = ARMV8_IDX_TO_COUNTER(idx);
-	unsigned long mask = ARMV8_PMU_EVTYPE_EVENT |
-			     ARMV8_PMU_INCLUDE_EL2 |
-			     ARMV8_PMU_EXCLUDE_EL0 |
-			     ARMV8_PMU_EXCLUDE_EL1;
 
-	if (IS_ENABLED(CONFIG_ARM64))
-		mask |= ARMV8_PMU_EVTYPE_TC | ARMV8_PMU_EVTYPE_TH;
-
-	val &= mask;
+	val &= ARMV8_PMU_EVTYPE_MASK;
 	write_pmevtypern(counter, val);
 }
 
@@ -746,7 +667,7 @@ static u32 armv8pmu_getreset_flags(void)
 	value = read_pmovsclr();
 
 	/* Write to clear flags */
-	value &= ARMV8_PMU_OVERFLOWED_MASK;
+	value &= ARMV8_PMU_OVSR_MASK;
 	write_pmovsclr(value);
 
 	return value;
@@ -973,8 +894,7 @@ static int armv8pmu_get_event_idx(struct pmu_hw_events *cpuc,
 	unsigned long evtype = hwc->config_base & ARMV8_PMU_EVTYPE_EVENT;
 
 	/* Always prefer to place a cycle counter into the cycle counter. */
-	if ((evtype == ARMV8_PMUV3_PERFCTR_CPU_CYCLES) &&
-	    !armv8pmu_event_get_threshold(&event->attr)) {
+	if (evtype == ARMV8_PMUV3_PERFCTR_CPU_CYCLES) {
 		if (!test_and_set_bit(ARMV8_IDX_CYCLE_COUNTER, cpuc->used_mask))
 			return ARMV8_IDX_CYCLE_COUNTER;
 		else if (armv8pmu_event_is_64bit(event) &&
@@ -1043,15 +963,9 @@ static int armv8pmu_set_event_filter(struct hw_perf_event *event,
 				     struct perf_event_attr *attr)
 {
 	unsigned long config_base = 0;
-	struct perf_event *perf_event = container_of(attr, struct perf_event,
-						     attr);
-	struct arm_pmu *cpu_pmu = to_arm_pmu(perf_event->pmu);
-	u32 th;
 
-	if (attr->exclude_idle) {
-		pr_debug("ARM performance counters do not support mode exclusion\n");
-		return -EOPNOTSUPP;
-	}
+	if (attr->exclude_idle)
+		return -EPERM;
 
 	/*
 	 * If we're running in hyp mode, then we *are* the hypervisor.
@@ -1079,22 +993,6 @@ static int armv8pmu_set_event_filter(struct hw_perf_event *event,
 
 	if (attr->exclude_user)
 		config_base |= ARMV8_PMU_EXCLUDE_EL0;
-
-	/*
-	 * If FEAT_PMUv3_TH isn't implemented, then THWIDTH (threshold_max) will
-	 * be 0 and will also trigger this check, preventing it from being used.
-	 */
-	th = armv8pmu_event_get_threshold(attr);
-	if (th > threshold_max(cpu_pmu)) {
-		pr_debug("PMU event threshold exceeds max value\n");
-		return -EINVAL;
-	}
-
-	if (IS_ENABLED(CONFIG_ARM64) && th) {
-		config_base |= FIELD_PREP(ARMV8_PMU_EVTYPE_TH, th);
-		config_base |= FIELD_PREP(ARMV8_PMU_EVTYPE_TC,
-					  armv8pmu_event_threshold_control(attr));
-	}
 
 	/*
 	 * Install the filter into config_base as this is used to
@@ -1247,7 +1145,8 @@ static void __armv8pmu_probe_pmu(void *info)
 	probe->present = true;
 
 	/* Read the nb of CNTx counters supported from PMNC */
-	cpu_pmu->num_events = FIELD_GET(ARMV8_PMU_PMCR_N, armv8pmu_pmcr_read());
+	cpu_pmu->num_events = (armv8pmu_pmcr_read() >> ARMV8_PMU_PMCR_N_SHIFT)
+		& ARMV8_PMU_PMCR_N_MASK;
 
 	/* Add the CPU cycles counter */
 	cpu_pmu->num_events += 1;
@@ -1407,12 +1306,6 @@ static int name##_pmu_init(struct arm_pmu *cpu_pmu)			\
 	return armv8_pmu_init(cpu_pmu, #name, armv8_pmuv3_map_event);	\
 }
 
-#define PMUV3_INIT_MAP_EVENT(name, map_event)				\
-static int name##_pmu_init(struct arm_pmu *cpu_pmu)			\
-{									\
-	return armv8_pmu_init(cpu_pmu, #name, map_event);		\
-}
-
 PMUV3_INIT_SIMPLE(armv8_pmuv3)
 
 PMUV3_INIT_SIMPLE(armv8_cortex_a34)
@@ -1425,32 +1318,59 @@ PMUV3_INIT_SIMPLE(armv8_cortex_a78)
 PMUV3_INIT_SIMPLE(armv8_neoverse_e1)
 PMUV3_INIT_SIMPLE(armv8_neoverse_n1)
 
-PMUV3_INIT_MAP_EVENT(armv8_cortex_a35, armv8_a53_map_event)
-PMUV3_INIT_MAP_EVENT(armv8_cortex_a53, armv8_a53_map_event)
-PMUV3_INIT_MAP_EVENT(armv8_cortex_a57, armv8_a57_map_event)
-PMUV3_INIT_MAP_EVENT(armv8_cortex_a72, armv8_a57_map_event)
-PMUV3_INIT_MAP_EVENT(armv8_cortex_a73, armv8_a73_map_event)
-PMUV3_INIT_MAP_EVENT(armv8_cavium_thunder, armv8_thunder_map_event)
-PMUV3_INIT_MAP_EVENT(armv8_brcm_vulcan, armv8_vulcan_map_event)
+static int armv8_a35_pmu_init(struct arm_pmu *cpu_pmu)
+{
+	return armv8_pmu_init(cpu_pmu, "armv8_cortex_a35", armv8_a53_map_event);
+}
+
+static int armv8_a53_pmu_init(struct arm_pmu *cpu_pmu)
+{
+	return armv8_pmu_init(cpu_pmu, "armv8_cortex_a53", armv8_a53_map_event);
+}
+
+static int armv8_a57_pmu_init(struct arm_pmu *cpu_pmu)
+{
+	return armv8_pmu_init(cpu_pmu, "armv8_cortex_a57", armv8_a57_map_event);
+}
+
+static int armv8_a72_pmu_init(struct arm_pmu *cpu_pmu)
+{
+	return armv8_pmu_init(cpu_pmu, "armv8_cortex_a72", armv8_a57_map_event);
+}
+
+static int armv8_a73_pmu_init(struct arm_pmu *cpu_pmu)
+{
+	return armv8_pmu_init(cpu_pmu, "armv8_cortex_a73", armv8_a73_map_event);
+}
+
+static int armv8_thunder_pmu_init(struct arm_pmu *cpu_pmu)
+{
+	return armv8_pmu_init(cpu_pmu, "armv8_cavium_thunder", armv8_thunder_map_event);
+}
+
+static int armv8_vulcan_pmu_init(struct arm_pmu *cpu_pmu)
+{
+	return armv8_pmu_init(cpu_pmu, "armv8_brcm_vulcan", armv8_vulcan_map_event);
+}
 
 static const struct of_device_id armv8_pmu_of_device_ids[] = {
 	{.compatible = "arm,armv8-pmuv3",	.data = armv8_pmuv3_pmu_init},
 	{.compatible = "arm,cortex-a34-pmu",	.data = armv8_cortex_a34_pmu_init},
-	{.compatible = "arm,cortex-a35-pmu",	.data = armv8_cortex_a35_pmu_init},
-	{.compatible = "arm,cortex-a53-pmu",	.data = armv8_cortex_a53_pmu_init},
+	{.compatible = "arm,cortex-a35-pmu",	.data = armv8_a35_pmu_init},
+	{.compatible = "arm,cortex-a53-pmu",	.data = armv8_a53_pmu_init},
 	{.compatible = "arm,cortex-a55-pmu",	.data = armv8_cortex_a55_pmu_init},
-	{.compatible = "arm,cortex-a57-pmu",	.data = armv8_cortex_a57_pmu_init},
+	{.compatible = "arm,cortex-a57-pmu",	.data = armv8_a57_pmu_init},
 	{.compatible = "arm,cortex-a65-pmu",	.data = armv8_cortex_a65_pmu_init},
-	{.compatible = "arm,cortex-a72-pmu",	.data = armv8_cortex_a72_pmu_init},
-	{.compatible = "arm,cortex-a73-pmu",	.data = armv8_cortex_a73_pmu_init},
+	{.compatible = "arm,cortex-a72-pmu",	.data = armv8_a72_pmu_init},
+	{.compatible = "arm,cortex-a73-pmu",	.data = armv8_a73_pmu_init},
 	{.compatible = "arm,cortex-a75-pmu",	.data = armv8_cortex_a75_pmu_init},
 	{.compatible = "arm,cortex-a76-pmu",	.data = armv8_cortex_a76_pmu_init},
 	{.compatible = "arm,cortex-a77-pmu",	.data = armv8_cortex_a77_pmu_init},
 	{.compatible = "arm,cortex-a78-pmu",	.data = armv8_cortex_a78_pmu_init},
 	{.compatible = "arm,neoverse-e1-pmu",	.data = armv8_neoverse_e1_pmu_init},
 	{.compatible = "arm,neoverse-n1-pmu",	.data = armv8_neoverse_n1_pmu_init},
-	{.compatible = "cavium,thunder-pmu",	.data = armv8_cavium_thunder_pmu_init},
-	{.compatible = "brcm,vulcan-pmu",	.data = armv8_brcm_vulcan_pmu_init},
+	{.compatible = "cavium,thunder-pmu",	.data = armv8_thunder_pmu_init},
+	{.compatible = "brcm,vulcan-pmu",	.data = armv8_vulcan_pmu_init},
 	{},
 };
 
