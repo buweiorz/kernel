@@ -92,7 +92,7 @@
 #include <asm/virt.h>
 
 /* Kernel representation of AT_HWCAP and AT_HWCAP2 */
-static DECLARE_BITMAP(elf_hwcap, MAX_CPU_FEATURES) __read_mostly;
+static unsigned long elf_hwcap __read_mostly;
 
 #ifdef CONFIG_COMPAT
 #define COMPAT_ELF_HWCAP_DEFAULT	\
@@ -2965,13 +2965,15 @@ static bool __maybe_unused __system_matches_cap(unsigned int n)
 
 void cpu_set_feature(unsigned int num)
 {
-	set_bit(num, elf_hwcap);
+	WARN_ON(num >= MAX_CPU_FEATURES);
+	elf_hwcap |= BIT(num);
 }
 EXPORT_SYMBOL_GPL(cpu_set_feature);
 
 bool cpu_have_feature(unsigned int num)
 {
-	return test_bit(num, elf_hwcap);
+	WARN_ON(num >= MAX_CPU_FEATURES);
+	return elf_hwcap & BIT(num);
 }
 EXPORT_SYMBOL_GPL(cpu_have_feature);
 
@@ -2982,12 +2984,12 @@ unsigned long cpu_get_elf_hwcap(void)
 	 * note that for userspace compatibility we guarantee that bits 62
 	 * and 63 will always be returned as 0.
 	 */
-	return elf_hwcap[0];
+	return lower_32_bits(elf_hwcap);
 }
 
 unsigned long cpu_get_elf_hwcap2(void)
 {
-	return elf_hwcap[1];
+	return upper_32_bits(elf_hwcap);
 }
 
 static void __init setup_system_capabilities(void)
