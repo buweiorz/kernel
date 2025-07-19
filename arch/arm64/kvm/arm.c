@@ -730,6 +730,8 @@ static void check_vcpu_requests(struct kvm_vcpu *vcpu)
 		if (kvm_check_request(KVM_REQ_RELOAD_PMU, vcpu))
 			kvm_pmu_handle_pmcr(vcpu, kvm_vcpu_read_pmcr(vcpu));
 
+		if (kvm_check_request(KVM_REQ_RELOAD_TLBI_DVMBM, vcpu))
+			kvm_hisi_reload_lsudvmbm(vcpu->kvm);
 	}
 }
 
