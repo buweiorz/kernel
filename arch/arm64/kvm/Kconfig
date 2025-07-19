@@ -4,6 +4,7 @@
 #
 
 source "virt/lib/Kconfig"
+source "arch/arm64/kvm/hisilicon/Kconfig"
 
 menuconfig VIRTUALIZATION
 	bool "Virtualization"

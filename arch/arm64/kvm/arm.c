@@ -45,6 +45,10 @@
 
 static enum kvm_mode kvm_mode = KVM_MODE_DEFAULT;
 
+#ifdef CONFIG_KVM_HISI_VIRT
+#include "hisilicon/hisi_virt.h"
+#endif
+
 DECLARE_KVM_HYP_PER_CPU(unsigned long, kvm_hyp_vector);
 
 static DEFINE_PER_CPU(unsigned long, kvm_arm_hyp_stack_page);
@@ -57,8 +61,7 @@ static u32 kvm_next_vmid;
 static DEFINE_SPINLOCK(kvm_vmid_lock);
 
 static bool vgic_present, kvm_arm_initialised;
-/* Hisi cpu type enum */
-enum hisi_cpu_type hi_cpu_type = UNKNOWN_HI_TYPE;
+/* Capability of non-cacheable snooping */
 bool kvm_ncsnp_support;
 
 static DEFINE_PER_CPU(unsigned char, kvm_arm_hardware_enabled);
@@ -2055,9 +2058,11 @@ int kvm_arch_init(void *opaque)
 		return -ENODEV;
 	}
 
-	/* Probe the Hisi CPU type */
+#ifdef CONFIG_KVM_HISI_VIRT
 	probe_hisi_cpu_type();
-	probe_hisi_ncsnp_support();
+	kvm_ncsnp_support = hisi_ncsnp_supported();
+#endif
+	kvm_info("KVM ncsnp %s\n", kvm_ncsnp_support ? "enabled" : "disabled");
 
 	in_hyp_mode = is_kernel_in_hyp_mode();
 
