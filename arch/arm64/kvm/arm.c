@@ -57,6 +57,8 @@ static u32 kvm_next_vmid;
 static DEFINE_SPINLOCK(kvm_vmid_lock);
 
 static bool vgic_present, kvm_arm_initialised;
+/* Hisi cpu type enum */
+enum hisi_cpu_type hi_cpu_type = UNKNOWN_HI_TYPE;
 
 static DEFINE_PER_CPU(unsigned char, kvm_arm_hardware_enabled);
 DEFINE_STATIC_KEY_FALSE(userspace_irqchip_in_use);
@@ -2051,6 +2053,9 @@ int kvm_arch_init(void *opaque)
 		kvm_info("HYP mode not available\n");
 		return -ENODEV;
 	}
+
+	/* Probe the Hisi CPU type */
+	probe_hisi_cpu_type();
 
 	in_hyp_mode = is_kernel_in_hyp_mode();
 
