@@ -136,6 +136,11 @@ struct kvm_arch {
 
 	/* Memory Tagging Extension enabled for the guest */
 	bool mte_enabled;
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	spinlock_t sched_lock;
+	cpumask_var_t sched_cpus;	/* Union of all vcpu's cpus_ptr */
+#endif
 };
 
 struct kvm_vcpu_fault_info {
