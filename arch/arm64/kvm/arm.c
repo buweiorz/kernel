@@ -45,9 +45,7 @@
 
 static enum kvm_mode kvm_mode = KVM_MODE_DEFAULT;
 
-#ifdef CONFIG_KVM_HISI_VIRT
 #include "hisilicon/hisi_virt.h"
-#endif
 
 DECLARE_KVM_HYP_PER_CPU(unsigned long, kvm_hyp_vector);
 
@@ -353,6 +351,10 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 	if (err)
 		return err;
 
+	err = kvm_sched_affinity_vcpu_init(vcpu);
+	if (err)
+		return err;
+
 	return create_hyp_mappings(vcpu, vcpu + 1, PAGE_HYP);
 }
 
@@ -370,6 +372,8 @@ void kvm_arch_vcpu_destroy(struct kvm_vcpu *vcpu)
 	kvm_pmu_vcpu_destroy(vcpu);
 	kvm_vgic_vcpu_destroy(vcpu);
 	kvm_arm_vcpu_destroy(vcpu);
+
+	kvm_sched_affinity_vcpu_destroy(vcpu);
 }
 
 int kvm_cpu_has_pending_timer(struct kvm_vcpu *vcpu)
@@ -443,6 +447,8 @@ void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 	if (vcpu_has_ptrauth(vcpu))
 		vcpu_ptrauth_disable(vcpu);
 	kvm_arch_vcpu_load_debug_state_flags(vcpu);
+
+	kvm_tlbi_dvmbm_vcpu_load(vcpu);
 }
 
 void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
@@ -456,6 +462,8 @@ void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
 	kvm_vcpu_pmu_restore_host(vcpu);
 
 	vcpu->cpu = -1;
+
+	kvm_tlbi_dvmbm_vcpu_put(vcpu);
 }
 
 static void vcpu_power_off(struct kvm_vcpu *vcpu)
@@ -2061,11 +2069,9 @@ int kvm_arch_init(void *opaque)
 		return -ENODEV;
 	}
 
-#ifdef CONFIG_KVM_HISI_VIRT
 	probe_hisi_cpu_type();
 	kvm_ncsnp_support = hisi_ncsnp_supported();
 	kvm_dvmbm_support = hisi_dvmbm_supported();
-#endif
 	kvm_info("KVM ncsnp %s\n", kvm_ncsnp_support ? "enabled" : "disabled");
 	kvm_info("KVM dvmbm %s\n", kvm_dvmbm_support ? "enabled" : "disabled");
 

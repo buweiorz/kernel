@@ -393,6 +393,12 @@ struct kvm_vcpu_arch {
 		u64 last_steal;
 		gpa_t base;
 	} steal;
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	/* pCPUs this vCPU can be scheduled on. Pure copy of current->cpus_ptr */
+	cpumask_var_t sched_cpus;
+	cpumask_var_t pre_sched_cpus;
+#endif
 };
 
 /*
